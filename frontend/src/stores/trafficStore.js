@@ -30,6 +30,9 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** @type {import('vue').Ref<number|null>} Timestamp de la última actualización del snapshot */
   const lastUpdate = ref(null)
 
+  /** @type {import('vue').Ref<boolean>} Snapshot servido desde caché (fuentes externas sin datos) */
+  const stale = ref(false)
+
   /** El cuello de botella más grave (compatibilidad con rutas alternativas). */
   const bottleneck = computed(() => bottlenecks.value[0] ?? null)
 
@@ -41,6 +44,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     segments.value = snapshot.segments ?? []
     bottlenecks.value = snapshot.bottlenecks ?? []
     alerts.value = snapshot.alerts ?? []
+    stale.value = snapshot.stale === true
     lastUpdate.value = Date.now()
   }
 
@@ -57,5 +61,5 @@ export const useTrafficStore = defineStore('traffic', () => {
     focusSegmentId.value = segmentId
   }
 
-  return { segments, bottlenecks, bottleneck, alerts, connected, history, demoActive, focusSegmentId, lastUpdate, updateFromSnapshot, setHistory, requestFocus }
+  return { segments, bottlenecks, bottleneck, alerts, connected, history, demoActive, focusSegmentId, lastUpdate, stale, updateFromSnapshot, setHistory, requestFocus }
 })

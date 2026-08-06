@@ -9,10 +9,10 @@
           <p>Área Metropolitana del Valle de Aburrá · Antioquia</p>
         </div>
       </div>
-      <div class="status" :class="store.connected ? 'live' : 'down'">
+      <div class="status" :class="store.connected ? (store.stale ? 'stale' : 'live') : 'down'">
         <span class="dot" />
-        {{ store.connected ? 'EN VIVO' : 'SIN SEÑAL' }}
-        <span v-if="store.connected && store.lastUpdate" class="status-time" title="Última actualización del snapshot">
+        {{ store.connected ? (store.stale ? 'CACHÉ' : 'EN VIVO') : 'SIN SEÑAL' }}
+        <span v-if="store.connected && store.lastUpdate" class="status-time" :title="store.stale ? 'Fuentes externas sin datos (cuota agotada). Mostrando el último snapshot válido.' : 'Última actualización del snapshot'">
           · {{ fmtTime(store.lastUpdate) }}
         </span>
       </div>
@@ -137,6 +137,11 @@ h1 {
   color: #15803d;
 }
 
+.status.stale {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
 .status.down {
   background: #fee2e2;
   color: #b91c1c;
@@ -155,6 +160,7 @@ h1 {
 }
 
 .status.live .dot { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.8); }
+.status.stale .dot { background: #eab308; box-shadow: 0 0 6px rgba(234, 179, 8, 0.8); }
 .status.down .dot { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.8); }
 
 .logout-btn {

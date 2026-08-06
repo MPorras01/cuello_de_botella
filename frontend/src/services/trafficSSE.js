@@ -68,12 +68,14 @@ export async function connectSSE() {
         if (data) {
           try {
             const snapshot = JSON.parse(data)
-            if (snapshot.segments && snapshot.segments.length > 0) {
+            const hasData = (snapshot.segments && snapshot.segments.length > 0)
+              || (snapshot.alerts && snapshot.alerts.length > 0)
+            if (hasData) {
               store.demoActive = false
               store.updateFromSnapshot(snapshot)
             } else {
-              // Sin API keys configuradas: las fuentes fallan y el snapshot
-              // llega vacío. Se muestra el modo demo para visualizar trancones.
+              // Sin datos de ninguna fuente (API keys ausentes o cuota agotada
+              // sin caché previa): se muestra el modo demo para visualizar.
               store.demoActive = true
               const demo = buildDemoSegments()
               const bottlenecks = demo

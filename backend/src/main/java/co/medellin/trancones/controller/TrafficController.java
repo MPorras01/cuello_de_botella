@@ -20,6 +20,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Controlador reactivo. Expone endpoints SSE y REST.
@@ -38,6 +39,13 @@ public class TrafficController {
     private final HistoryService historyService;
     private final NotificationService notificationService;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
+
+    /**
+     * Último snapshot válido (con datos). Se sirve como caché cuando un ciclo
+     * no logra datos de ninguna fuente (p. ej. cuota externa agotada), para
+     * que el mapa nunca quede en blanco. Se marca stale = true.
+     */
+    private final AtomicReference<TrafficSnapshotDTO> lastGoodSnapshot = new AtomicReference<>();
 
     /**
      * Intervalo entre ciclos SSE (segundos). Configurable para ajustar el
@@ -60,7 +68,32 @@ public class TrafficController {
                     return aggregatorService.getAggregatedTraffic()
                             .flatMap(agg -> {
                                 List<SegmentStatus> bottlenecks = bottleneckService.detectAll(agg.segments());
-                                var snapshot = new TrafficSnapshotDTO(agg.segments(), bottlenecks, agg.alerts());
+                                TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+                                TrafficSnapshotDTO snapshot;
+                                if (!agg.segments().isEmpty()) {
+                                    // Ciclo sano: se refresca la caché con segmentos + alertas.
+                                    snapshot = TrafficSnapshotDTO.fresh(agg.segments(), bottlenecks, agg.alerts());
+                                    lastGoodSnapshot.set(snapshot);
+                                } else if (!agg.alerts().isEmpty()) {
+                                    // Fallaron los segmentos pero hay alertas frescas: se mantienen
+                                    // los segmentos en caché y se fusionan con las alertas nuevas.
+                                    snapshot = cached != null && !cached.segments().isEmpty()
+                                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                                    agg.alerts(), true)
+                                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), agg.alerts());
+                                    if (cached != null && !cached.segments().isEmpty()) {
+                                        log.warn("[Controller] Sin segmentos de fuentes externas — segmentos en caché + alertas frescas");
+                                    }
+                                } else {
+                                    // Sin datos de ninguna fuente: servir el último válido como caché.
+                                    snapshot = cached != null
+                                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                                    cached.alerts(), true)
+                                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of());
+                                    if (cached != null) {
+                                        log.warn("[Controller] Sin datos de fuentes externas — sirviendo snapshot en caché");
+                                    }
+                                }
                                 return cacheAndNotify(snapshot, start);
                             });
                 })
@@ -74,6 +107,11 @@ public class TrafficController {
         SegmentStatus worst = snapshot.bottlenecks() == null || snapshot.bottlenecks().isEmpty()
                 ? null
                 : snapshot.bottlenecks().get(0);
+
+        // Snapshot en caché: no re-notificar ni reescribir Redis (datos sin cambios).
+        if (snapshot.stale()) {
+            return Mono.fromSupplier(() -> snapshot);
+        }
 
         // Cachear en Redis con TTL 60s (onErrorResume para fallback si Redis no está disponible)
         Mono<Void> cacheOp = Flux.fromIterable(snapshot.segments())
