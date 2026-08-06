@@ -36,8 +36,6 @@
             :key="seg.segmentId"
             class="feed-row"
             @click="store.requestFocus(seg.segmentId)"
-            @mouseenter="hovered = seg.segmentId"
-            @mouseleave="hovered = null"
           >
             <span class="feed-dot" :style="{ background: levelFromRatio(seg.speedRatio ?? 1).color }" />
             <div class="feed-info">
@@ -62,7 +60,6 @@ import { useTrafficStore } from '../stores/trafficStore'
 import { levelFromRatio } from '../utils/trafficLevels'
 
 const store = useTrafficStore()
-const hovered = ref(null)
 const open = ref(true)
 const filter = ref('todos')
 
@@ -150,7 +147,7 @@ const filteredSegments = computed(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  max-height: 320px;
+  max-height: var(--feed-max-h, 320px);
 }
 
 .feed-tabs {
@@ -269,6 +266,6 @@ const filteredSegments = computed(() => {
 
 .collapse-enter-to,
 .collapse-leave-from {
-  max-height: 320px;
+  max-height: var(--feed-max-h, 320px);
   opacity: 1;
 }</style>
