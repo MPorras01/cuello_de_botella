@@ -43,7 +43,7 @@ public class TrafficController {
      * Intervalo entre ciclos SSE (segundos). Configurable para ajustar el
      * consumo de la cuota de las APIs externas (TomTom free ≈ 2.500/día).
      */
-    @Value("${traffic.refresh-interval-seconds:60}")
+    @Value("${traffic.refresh-interval-seconds:30}")
     private long refreshIntervalSeconds;
 
     // ─── SSE ─────────────────────────────────────────────────────────────────
