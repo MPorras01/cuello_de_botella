@@ -73,7 +73,9 @@ traffic:
         - { name: 'Troncal 34 · Itagüí', lat: 6.1590, lon: -75.6110 }
   bottleneck:
     speed-ratio-threshold: 0.3
-  refresh-interval-seconds: 30
+  # Intervalo del ciclo SSE en segundos. Ajusta para controlar la cuota de
+  # las APIs externas (TomTom free tier ≈ 2.500 llamadas/día).
+  refresh-interval-seconds: ${TRAFFIC_REFRESH_INTERVAL_SECONDS:60}
 
 vapid:
   public-key: ${VAPID_PUBLIC_KEY:}

@@ -36,10 +36,9 @@ public class HistoryService {
     @Scheduled(fixedDelayString = "PT5M")
     public void scheduleSnapshot() {
         aggregatorService.getAggregatedTraffic()
-                .collectList()
-                .flatMap(segments -> {
-                    log.info("[History] Persistiendo snapshot con {} segmentos", segments.size());
-                    return persistSnapshot(segments);
+                .flatMap(agg -> {
+                    log.info("[History] Persistiendo snapshot con {} segmentos", agg.segments().size());
+                    return persistSnapshot(agg.segments());
                 })
                 .subscribe(
                         count -> log.info("[History] Snapshot persistido: {} registros", count),

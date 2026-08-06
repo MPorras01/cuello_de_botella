@@ -4,9 +4,11 @@ import java.util.List;
 
 /**
  * Payload del evento SSE emitido por /api/stream/traffic.
- * bottleneck puede ser null si no hay datos en el ciclo actual.
+ * bottlenecks contiene TODOS los cuellos de botella del ciclo (peor primero),
+ * puede estar vacío. alerts contiene los incidentes (policía, accidentes, etc.).
  */
 public record TrafficSnapshotDTO(
     List<SegmentStatus> segments,
-    SegmentStatus bottleneck
+    List<SegmentStatus> bottlenecks,
+    List<TrafficAlert> alerts
 ) {}

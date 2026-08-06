@@ -1,6 +1,6 @@
 import { useTrafficStore } from '../stores/trafficStore'
 import { useAuthStore } from '../stores/authStore'
-import { buildDemoSegments } from './demoTraffic'
+import { buildDemoSegments, buildDemoAlerts } from './demoTraffic'
 
 /**
  * Conexión SSE al backend usando fetch + ReadableStream.
@@ -76,9 +76,14 @@ export async function connectSSE() {
               // llega vacío. Se muestra el modo demo para visualizar trancones.
               store.demoActive = true
               const demo = buildDemoSegments()
-              const worst = demo.reduce((a, b) =>
-                b.speedRatio < a.speedRatio ? b : a, demo[0])
-              store.updateFromSnapshot({ segments: demo, bottleneck: worst })
+              const bottlenecks = demo
+                .filter((s) => s.speedRatio < 0.5)
+                .sort((a, b) => a.speedRatio - b.speedRatio)
+              store.updateFromSnapshot({
+                segments: demo,
+                bottlenecks,
+                alerts: buildDemoAlerts()
+              })
             }
           } catch (err) {
             console.error('[SSE] Error deserializando snapshot:', err)

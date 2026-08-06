@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +19,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Controlador reactivo. Expone endpoints SSE y REST.
@@ -37,6 +39,13 @@ public class TrafficController {
     private final NotificationService notificationService;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
 
+    /**
+     * Intervalo entre ciclos SSE (segundos). Configurable para ajustar el
+     * consumo de la cuota de las APIs externas (TomTom free ≈ 2.500/día).
+     */
+    @Value("${traffic.refresh-interval-seconds:60}")
+    private long refreshIntervalSeconds;
+
     // ─── SSE ─────────────────────────────────────────────────────────────────
 
     /**
@@ -45,17 +54,15 @@ public class TrafficController {
      */
     @GetMapping(value = "/stream/traffic", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<TrafficSnapshotDTO>> streamTraffic() {
-        return Flux.interval(Duration.ofSeconds(30))
+        return Flux.interval(Duration.ofSeconds(Math.max(10, refreshIntervalSeconds)))
                 .flatMap(tick -> {
                     long start = System.currentTimeMillis();
                     return aggregatorService.getAggregatedTraffic()
-                            .collectList()
-                            .flatMap(segments ->
-                                    bottleneckService.detect(segments)
-                                            .map(bn -> new TrafficSnapshotDTO(segments, bn))
-                                            .defaultIfEmpty(new TrafficSnapshotDTO(segments, null))
-                                            .flatMap(snapshot -> cacheAndNotify(snapshot, start))
-                            );
+                            .flatMap(agg -> {
+                                List<SegmentStatus> bottlenecks = bottleneckService.detectAll(agg.segments());
+                                var snapshot = new TrafficSnapshotDTO(agg.segments(), bottlenecks, agg.alerts());
+                                return cacheAndNotify(snapshot, start);
+                            });
                 })
                 .map(snapshot -> ServerSentEvent.<TrafficSnapshotDTO>builder()
                         .event("traffic-update")
@@ -64,15 +71,19 @@ public class TrafficController {
     }
 
     private Mono<TrafficSnapshotDTO> cacheAndNotify(TrafficSnapshotDTO snapshot, long startMs) {
+        SegmentStatus worst = snapshot.bottlenecks() == null || snapshot.bottlenecks().isEmpty()
+                ? null
+                : snapshot.bottlenecks().get(0);
+
         // Cachear en Redis con TTL 60s (onErrorResume para fallback si Redis no está disponible)
         Mono<Void> cacheOp = Flux.fromIterable(snapshot.segments())
                 .flatMap(seg -> redisTemplate.opsForValue()
                         .set("traffic:segment:" + seg.segmentId(),
                                 seg.segmentId() + ":" + seg.speedRatio(),
                                 Duration.ofSeconds(60)))
-                .then(snapshot.bottleneck() != null
+                .then(worst != null
                         ? redisTemplate.opsForValue()
-                                .set("traffic:bottleneck", snapshot.bottleneck().segmentId(),
+                                .set("traffic:bottleneck", worst.segmentId(),
                                         Duration.ofSeconds(60)).then()
                         : Mono.empty())
                 .onErrorResume(e -> {
@@ -81,8 +92,8 @@ public class TrafficController {
                 });
 
         // Enviar notificación push si hay cuello de botella severo
-        Mono<Void> notifyOp = snapshot.bottleneck() != null
-                ? notificationService.notifyBottleneck(snapshot.bottleneck()).onErrorResume(e -> Mono.empty())
+        Mono<Void> notifyOp = worst != null
+                ? notificationService.notifyBottleneck(worst).onErrorResume(e -> Mono.empty())
                 : Mono.empty();
 
         return cacheOp.then(notifyOp)
