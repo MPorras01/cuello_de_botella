@@ -16,7 +16,7 @@
 
     <transition name="collapse">
       <div v-if="open" class="feed-body">
-        <!-- Filtros -->
+        <!-- Filtros / pestañas -->
         <div class="feed-tabs">
           <button
             class="feed-tab"
@@ -28,9 +28,33 @@
             :class="{ active: filter === 'alertas' }"
             @click.stop="filter = 'alertas'"
           >⚠ Alertas</button>
+          <button
+            class="feed-tab"
+            :class="{ active: filter === 'incidentes' }"
+            @click.stop="filter = 'incidentes'"
+          >🚨 Incidentes <span class="tab-count">{{ store.alerts.length }}</span></button>
         </div>
 
-        <ul v-if="filteredSegments.length > 0" class="feed-list">
+        <!-- Lista de incidentes (policía, accidentes, obras...) -->
+        <ul v-if="filter === 'incidentes' && store.alerts.length > 0" class="feed-list">
+          <li
+            v-for="alert in store.alerts"
+            :key="alert.id"
+            class="feed-row"
+            @click="store.requestFocus(alert.id)"
+          >
+            <span class="alert-ico" :class="'type-' + (alert.type ?? 'OTHER').toLowerCase()">
+              {{ ALERT_ICONS[alert.type] ?? '🛈' }}
+            </span>
+            <div class="feed-info">
+              <span class="feed-name">{{ alert.title }}</span>
+              <span class="feed-desc">{{ alert.description }}</span>
+            </div>
+          </li>
+        </ul>
+
+        <!-- Lista de segmentos -->
+        <ul v-else-if="filter !== 'incidentes' && filteredSegments.length > 0" class="feed-list">
           <li
             v-for="seg in filteredSegments"
             :key="seg.segmentId"
@@ -39,7 +63,10 @@
           >
             <span class="feed-dot" :style="{ background: levelFromRatio(seg.speedRatio ?? 1).color }" />
             <div class="feed-info">
-              <span class="feed-name">{{ seg.segmentName }}</span>
+              <span class="feed-name">
+                {{ seg.segmentName }}
+                <span v-if="isBottleneck(seg.segmentId)" class="bn-chip" title="Cuello de botella">!</span>
+              </span>
               <span class="feed-level" :style="{ color: levelFromRatio(seg.speedRatio ?? 1).color }">
                 {{ levelFromRatio(seg.speedRatio ?? 1).label }}
                 <em v-if="seg.speed != null">· {{ Math.round(seg.speed) }} km/h</em>
@@ -48,6 +75,7 @@
             <span class="feed-ratio">{{ (seg.speedRatio ?? 0).toFixed(2) }}</span>
           </li>
         </ul>
+
         <div v-else class="feed-empty">Sin alertas por ahora 🎉</div>
       </div>
     </transition>
@@ -63,6 +91,10 @@ const store = useTrafficStore()
 const open = ref(true)
 const filter = ref('todos')
 
+const ALERT_ICONS = {
+  POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️', OTHER: '🛈'
+}
+
 /** Peor primero: menor speedRatio arriba. */
 const sortedSegments = computed(() =>
   [...store.segments].sort((a, b) => (a.speedRatio ?? 1) - (b.speedRatio ?? 1))
@@ -75,6 +107,11 @@ const filteredSegments = computed(() => {
   }
   return sortedSegments.value
 })
+
+/** ¿Este segmento es un cuello de botella? */
+function isBottleneck(segmentId) {
+  return store.bottlenecks.some((b) => b.segmentId === segmentId)
+}
 </script>
 
 <style scoped>
@@ -174,6 +211,61 @@ const filteredSegments = computed(() => {
   background: #1a73e8;
   border-color: #1a73e8;
   color: #fff;
+}
+
+.tab-count {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.62rem;
+}
+
+.feed-tab:not(.active) .tab-count {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+/* Chip de cuello de botella en la lista */
+.bn-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 900;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+
+/* Icono de alerta en la lista */
+.alert-ico {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.95rem;
+  border: 2px solid #64748b;
+  background: #f8fafc;
+}
+
+.alert-ico.type-police { border-color: #2563eb; background: #eff6ff; }
+.alert-ico.type-accident { border-color: #dc2626; background: #fef2f2; }
+.alert-ico.type-works { border-color: #ea580c; background: #fff7ed; }
+.alert-ico.type-closure { border-color: #7c3aed; background: #f5f3ff; }
+.alert-ico.type-hazard { border-color: #d97706; background: #fffbeb; }
+
+.feed-desc {
+  font-size: 0.66rem;
+  color: #94a3b8;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .feed-list {

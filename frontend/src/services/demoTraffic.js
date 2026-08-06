@@ -143,3 +143,44 @@ export function buildDemoSegments() {
     }
   })
 }
+
+/**
+ * Alertas demo (policía, accidentes, obras, cierres) para visualizar la capa
+ * de incidentes cuando las fuentes externas no están configuradas.
+ */
+export function buildDemoAlerts() {
+  return [
+    {
+      id: 'demo-alert-police-80',
+      type: 'POLICE',
+      title: 'Policía',
+      description: 'Control de policía sobre la Avenida 80',
+      lat: 6.2505,
+      lng: -75.6078
+    },
+    {
+      id: 'demo-alert-works-regional',
+      type: 'WORKS',
+      title: 'Obras en la vía',
+      description: 'Trabajos de mantenimiento en la Av. Regional',
+      lat: 6.2210,
+      lng: -75.5870
+    },
+    {
+      id: 'demo-alert-accident-vegas',
+      type: 'ACCIDENT',
+      title: 'Accidente',
+      description: 'Accidente de tránsito en Av. Las Vegas',
+      lat: 6.1650,
+      lng: -75.5800
+    },
+    {
+      id: 'demo-alert-closure-norte',
+      type: 'CLOSURE',
+      title: 'Vía cerrada',
+      description: 'Cierre parcial de la Autopista Norte',
+      lat: 6.2910,
+      lng: -75.5700
+    }
+  ]
+}

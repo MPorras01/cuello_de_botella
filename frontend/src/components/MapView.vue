@@ -6,14 +6,22 @@
     <TrafficFeed />
 
     <!-- Leyenda compacta -->
-    <div class="legend">
+    <div class="legend" :class="{ dark: darkMode }">
       <div v-for="lvl in LEVELS" :key="lvl.key" class="legend-item">
         <i class="swatch" :style="{ background: lvl.color }" />
         <span>{{ lvl.label }}</span>
       </div>
       <div class="legend-item legend-bn">
-        <span class="bn-mini">🚨</span>
+        <span class="bn-mini">!</span>
         <span>Cuello de botella</span>
+      </div>
+      <div class="legend-item legend-alerts">
+        <span class="alert-mini">👮</span>
+        <span>Policía</span>
+        <span class="alert-mini">⚠️</span>
+        <span>Accidente</span>
+        <span class="alert-mini">🚧</span>
+        <span>Obras</span>
       </div>
     </div>
 
@@ -30,15 +38,22 @@
       <div v-if="toast" class="toast">¡Gracias! 🚦 Tu reporte ayuda a otros conductores <em>(demo)</em></div>
     </transition>
 
-    <!-- Badge del cuello de botella -->
-    <div v-if="store.bottleneck" class="bottleneck-badge" :class="levelFromRatio(store.bottleneck.speedRatio ?? 1).key">
+    <!-- Badge del cuello de botella (el peor, con contador si hay varios) -->
+    <div v-if="store.bottlenecks.length" class="bottleneck-badge" :class="levelFromRatio(store.bottlenecks[0].speedRatio ?? 1).key">
       <span class="badge-pulse" />
-      <span class="badge-text">{{ labelNivel(store.bottleneck.speedRatio) }} en {{ store.bottleneck.segmentName }}</span>
-      <button class="badge-focus" title="Ver en el mapa" @click="store.requestFocus(store.bottleneck.segmentId)">⌖</button>
+      <span class="badge-text">
+        {{ store.bottlenecks.length > 1 ? store.bottlenecks.length + ' cuellos de botella · ' : '' }}{{ labelNivel(store.bottlenecks[0].speedRatio) }} en {{ store.bottlenecks[0].segmentName }}
+      </span>
+      <button class="badge-focus" title="Ver en el mapa" @click="store.requestFocus(store.bottlenecks[0].segmentId)">⌖</button>
     </div>
 
     <!-- Botón: volver al área metropolitana -->
     <button class="metro-btn" @click="focusMetro">⬤ Área metropolitana</button>
+
+    <!-- Botón: modo día/noche -->
+    <button class="night-toggle" :title="darkMode ? 'Cambiar a modo día' : 'Cambiar a modo noche'" @click="toggleDarkMode">
+      {{ darkMode ? '☀️' : '🌙' }}
+    </button>
 
     <!-- Mensaje sin conexión -->
     <div v-if="!store.connected" class="offline-banner">
@@ -58,20 +73,48 @@ import { LEVELS, levelFromRatio, colorFromRatio, labelNivel } from '../utils/tra
 const store = useTrafficStore()
 const mapContainer = ref(null)
 const toast = ref('')
+const darkMode = ref(
+  localStorage.getItem('map-theme')
+    ? localStorage.getItem('map-theme') === 'dark'
+    : isNightTime()
+)
 
 let map = null
-let bottleneckMarker = null
 let popup = null
 let toastTimer = null
+let firstLoad = true
+let fallbackIdx = 0
+let alertMarkers = []
+let bottleneckMarkers = []
 
 // ─── Geografía: Medellín y área metropolitana (Valle de Aburrá) ─────────────
 const METRO_CENTER = [-75.5748, 6.2442]
 const METRO_BOUNDS = [[-75.74, 6.08], [-75.36, 6.44]]
 const MAX_BOUNDS = [[-76.40, 5.80], [-74.60, 7.20]]
-const FALLBACK_STYLES = [
+
+// Estilos claro / oscuro (noche)
+const LIGHT_STYLES = [
   'https://tiles.openfreemap.org/styles/liberty',
   'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
 ]
+const DARK_STYLES = [
+  'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  'https://tiles.openfreemap.org/styles/dark-matter'
+]
+
+const ALERT_ICONS = {
+  POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️', OTHER: '🛈'
+}
+
+/** ¿Es de noche? (19:00 – 06:00 hora local). */
+function isNightTime() {
+  const h = new Date().getHours()
+  return h >= 19 || h < 6
+}
+
+function currentStyles() {
+  return darkMode.value ? DARK_STYLES : LIGHT_STYLES
+}
 
 /** Escapa HTML para popups — los nombres vienen de fuentes externas. */
 function esc(value) {
@@ -138,98 +181,57 @@ function showSegmentPopup(seg, lngLat) {
   `).addTo(map)
 }
 
+function showAlertPopup(alert) {
+  if (!map) return
+  if (!popup) popup = new maplibregl.Popup({ offset: 16, closeButton: false })
+  popup.setLngLat([alert.lng, alert.lat]).setHTML(`
+    <div class="wz-popup">
+      <strong>${esc(ALERT_ICONS[alert.type] ?? '🛈')} ${esc(alert.title)}</strong>
+      <span class="wz-popup-meta">${esc(alert.description)}</span>
+    </div>
+  `).addTo(map)
+}
+
 function report() {
   toast.value = true
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toast.value = false }, 2800)
 }
 
-onMounted(() => {
-  map = new maplibregl.Map({
-    container: mapContainer.value,
-    style: FALLBACK_STYLES[0],
-    center: METRO_CENTER,
-    zoom: 12,
-    maxBounds: MAX_BOUNDS,
-    locale: {
-      'NavigationControl.ZoomIn': 'Acercar',
-      'NavigationControl.ZoomOut': 'Alejar',
-      'NavigationControl.ResetBearing': 'Restablecer orientación'
-    }
-  })
+function toggleDarkMode() {
+  darkMode.value = !darkMode.value
+  localStorage.setItem('map-theme', darkMode.value ? 'dark' : 'light')
+  fallbackIdx = 0
+  map?.setStyle(currentStyles()[0])
+}
 
-  map.addControl(new maplibregl.NavigationControl(), 'top-right')
-  map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
+// ─── Capas de tráfico (se recrean tras cada cambio de estilo) ───────────────
 
-  // Si el estilo principal falla, probar con un respaldo
-  let styleIdx = 0
-  map.on('error', (e) => {
-    if (e?.error && !e.source && !e.tile && styleIdx < FALLBACK_STYLES.length - 1) {
-      styleIdx++
-      console.warn('[Map] Estilo no disponible, probando respaldo:', FALLBACK_STYLES[styleIdx])
-      map.setStyle(FALLBACK_STYLES[styleIdx])
-    }
-  })
+function onSegmentClick(e) {
+  const f = e.features?.[0]
+  if (!f) return
+  const p = f.properties
+  showSegmentPopup(
+    {
+      segmentName: p.segmentName, speedRatio: p.speedRatio,
+      segmentId: p.segmentId, congestionLevel: p.congestionLevel,
+      speed: p.speed
+    },
+    e.lngLat
+  )
+}
 
-  map.on('load', () => {
-    focusMetro()
+const onMouseEnter = () => { map.getCanvas().style.cursor = 'pointer' }
+const onMouseLeave = () => { map.getCanvas().style.cursor = '' }
 
-    map.addSource('traffic', {
-      type: 'geojson',
-      data: buildGeoJSON([])
-    })
+function initTrafficLayers() {
+  if (!map) return
 
-    // Halo difuso bajo la vía
-    map.addLayer({
-      id: 'traffic-glow',
-      type: 'line',
-      source: 'traffic',
-      filter: ['==', ['geometry-type'], 'LineString'],
-      paint: {
-        'line-color': ['get', 'color'],
-        'line-width': 16,
-        'line-opacity': 0.3,
-        'line-blur': 8
-      }
-    })
+  if (!map.getSource('traffic')) {
+    map.addSource('traffic', { type: 'geojson', data: buildGeoJSON([]) })
+  }
 
-    // Contorno oscuro (casing) para resaltar sobre el mapa
-    map.addLayer({
-      id: 'traffic-casing',
-      type: 'line',
-      source: 'traffic',
-      filter: ['==', ['geometry-type'], 'LineString'],
-      paint: {
-        'line-color': '#334155',
-        'line-width': 10,
-        'line-opacity': 0.55,
-        'line-cap': 'round',
-        'line-join': 'round'
-      }
-    })
-
-    // Línea principal: gradiente de color a lo largo de la vía según congestión.
-    // Nota: line-gradient exige line-width constante (6) y no soporta
-    // line-dasharray ni line-blur en la misma capa — no mezclar.
-    map.addLayer({
-      id: 'traffic-segments',
-      type: 'line',
-      source: 'traffic',
-      filter: ['==', ['geometry-type'], 'LineString'],
-      paint: {
-        'line-gradient': [
-          'interpolate', ['linear'], ['line-progress'],
-          0, ['get', 'colorFrom'],
-          1, ['get', 'colorTo']
-        ],
-        'line-width': 6,
-        'line-opacity': 0.95,
-        'line-cap': 'round',
-        'line-join': 'round'
-      }
-    })
-
-    // Flechas de dirección del flujo (estilo Waze)
+  if (!map.hasImage('flow-arrow')) {
     const arrowCanvas = document.createElement('canvas')
     arrowCanvas.width = 32
     arrowCanvas.height = 32
@@ -245,86 +247,175 @@ onMounted(() => {
     actx.fill()
     actx.stroke()
     map.addImage('flow-arrow', arrowCanvas)
+  }
 
-    map.addLayer({
-      id: 'traffic-arrows',
-      type: 'symbol',
-      source: 'traffic',
-      filter: ['==', ['geometry-type'], 'LineString'],
-      layout: {
-        'symbol-placement': 'line',
-        'symbol-spacing': 130,
-        'icon-image': 'flow-arrow',
-        'icon-size': 0.5,
-        'icon-rotation-alignment': 'map',
-        'icon-offset': [0, -4]
-      },
-      paint: { 'icon-opacity': 0.9 }
-    })
+  const addLayer = (layer) => { if (!map.getLayer(layer.id)) map.addLayer(layer) }
 
-    // Puntos para segmentos sin geometría de línea
-    map.addLayer({
-      id: 'traffic-points',
-      type: 'circle',
-      source: 'traffic',
-      filter: ['==', ['geometry-type'], 'Point'],
-      paint: {
-        'circle-color': ['get', 'color'],
-        'circle-radius': 8,
-        'circle-stroke-width': 3,
-        'circle-stroke-color': '#ffffff',
-        'circle-opacity': 0.95
+  // Halo difuso bajo la vía
+  addLayer({
+    id: 'traffic-glow',
+    type: 'line',
+    source: 'traffic',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': 16,
+      'line-opacity': 0.3,
+      'line-blur': 8
+    }
+  })
+
+  // Contorno oscuro (casing) para resaltar sobre el mapa
+  addLayer({
+    id: 'traffic-casing',
+    type: 'line',
+    source: 'traffic',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: {
+      'line-color': '#334155',
+      'line-width': 10,
+      'line-opacity': 0.55,
+      'line-cap': 'round',
+      'line-join': 'round'
+    }
+  })
+
+  // Línea principal: gradiente de color a lo largo de la vía según congestión.
+  // Nota: line-gradient exige line-width constante (6) y no soporta
+  // line-dasharray ni line-blur en la misma capa — no mezclar.
+  addLayer({
+    id: 'traffic-segments',
+    type: 'line',
+    source: 'traffic',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: {
+      'line-gradient': [
+        'interpolate', ['linear'], ['line-progress'],
+        0, ['get', 'colorFrom'],
+        1, ['get', 'colorTo']
+      ],
+      'line-width': 6,
+      'line-opacity': 0.95,
+      'line-cap': 'round',
+      'line-join': 'round'
+    }
+  })
+
+  // Flechas de dirección del flujo (estilo Waze)
+  addLayer({
+    id: 'traffic-arrows',
+    type: 'symbol',
+    source: 'traffic',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    layout: {
+      'symbol-placement': 'line',
+      'symbol-spacing': 130,
+      'icon-image': 'flow-arrow',
+      'icon-size': 0.5,
+      'icon-rotation-alignment': 'map',
+      'icon-offset': [0, -4]
+    },
+    paint: { 'icon-opacity': 0.9 }
+  })
+
+  // Puntos para segmentos sin geometría de línea
+  addLayer({
+    id: 'traffic-points',
+    type: 'circle',
+    source: 'traffic',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-color': ['get', 'color'],
+      'circle-radius': 8,
+      'circle-stroke-width': 3,
+      'circle-stroke-color': '#ffffff',
+      'circle-opacity': 0.95
+    }
+  })
+
+  // Capas de resaltado de cuellos de botella (casing blanco + núcleo intermitente)
+  addLayer({
+    id: 'bottleneck-casing',
+    type: 'line',
+    source: 'traffic',
+    filter: ['in', ['get', 'segmentId'], ['literal', []]],
+    paint: {
+      'line-color': '#ffffff',
+      'line-width': 13,
+      'line-opacity': 0.95,
+      'line-cap': 'round',
+      'line-join': 'round'
+    }
+  })
+  addLayer({
+    id: 'bottleneck-core',
+    type: 'line',
+    source: 'traffic',
+    filter: ['in', ['get', 'segmentId'], ['literal', []]],
+    paint: {
+      'line-color': ['get', 'color'],
+      'line-width': 7.5,
+      'line-opacity': 1,
+      'line-cap': 'round',
+      'line-join': 'round',
+      'line-dasharray': [3, 1.4]
+    }
+  })
+
+  const targetLayers = ['traffic-segments', 'traffic-points', 'bottleneck-core']
+  map.off('click', targetLayers, onSegmentClick)
+  map.on('click', targetLayers, onSegmentClick)
+  map.off('mouseenter', targetLayers, onMouseEnter)
+  map.on('mouseenter', targetLayers, onMouseEnter)
+  map.off('mouseleave', targetLayers, onMouseLeave)
+  map.on('mouseleave', targetLayers, onMouseLeave)
+
+  // Reaplicar datos tras un cambio de estilo
+  updateTrafficLayer(store.segments)
+  updateBottleneckHighlight(store.bottlenecks)
+  updateBottleneckMarkers(store.bottlenecks)
+  updateAlertMarkers(store.alerts)
+}
+
+onMounted(() => {
+  map = new maplibregl.Map({
+    container: mapContainer.value,
+    style: currentStyles()[0],
+    center: METRO_CENTER,
+    zoom: 12,
+    maxBounds: MAX_BOUNDS,
+    locale: {
+      'NavigationControl.ZoomIn': 'Acercar',
+      'NavigationControl.ZoomOut': 'Alejar',
+      'NavigationControl.ResetBearing': 'Restablecer orientación'
+    }
+  })
+
+  map.addControl(new maplibregl.NavigationControl(), 'top-right')
+  map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
+
+  // Fallback de estilo: probar los respaldos del grupo actual
+  map.on('error', (e) => {
+    if (e?.error && !e.source && !e.tile) {
+      const styles = currentStyles()
+      if (fallbackIdx < styles.length - 1) {
+        fallbackIdx++
+        console.warn('[Map] Estilo no disponible, probando respaldo:', styles[fallbackIdx])
+        map.setStyle(styles[fallbackIdx])
+      } else if (styles !== DARK_STYLES) {
+        darkMode.value = true
+        fallbackIdx = 0
+        map.setStyle(DARK_STYLES[0])
       }
-    })
+    }
+  })
 
-    // Capas de resaltado del cuello de botella (casing blanco + núcleo intermitente)
-    map.addLayer({
-      id: 'bottleneck-casing',
-      type: 'line',
-      source: 'traffic',
-      filter: ['==', ['get', 'segmentId'], '__none__'],
-      paint: {
-        'line-color': '#ffffff',
-        'line-width': 13,
-        'line-opacity': 0.95,
-        'line-cap': 'round',
-        'line-join': 'round'
-      }
-    })
-    map.addLayer({
-      id: 'bottleneck-core',
-      type: 'line',
-      source: 'traffic',
-      filter: ['==', ['get', 'segmentId'], '__none__'],
-      paint: {
-        'line-color': ['get', 'color'],
-        'line-width': 7.5,
-        'line-opacity': 1,
-        'line-cap': 'round',
-        'line-join': 'round',
-        'line-dasharray': [3, 1.4]
-      }
-    })
-
-    const targetLayers = ['traffic-segments', 'traffic-points', 'bottleneck-core']
-    map.on('click', targetLayers, (e) => {
-      const f = e.features?.[0]
-      if (!f) return
-      const p = f.properties
-      showSegmentPopup(
-        {
-          segmentName: p.segmentName, speedRatio: p.speedRatio,
-          segmentId: p.segmentId, congestionLevel: p.congestionLevel,
-          speed: p.speed
-        },
-        e.lngLat
-      )
-    })
-    map.on('mouseenter', targetLayers, () => { map.getCanvas().style.cursor = 'pointer' })
-    map.on('mouseleave', targetLayers, () => { map.getCanvas().style.cursor = '' })
-
-    if (store.segments.length > 0) updateTrafficLayer(store.segments)
-    if (store.bottleneck) updateBottleneck(store.bottleneck)
+  map.on('load', () => {
+    initTrafficLayers()
+    if (firstLoad) {
+      firstLoad = false
+      focusMetro()
+    }
   })
 })
 
@@ -341,69 +432,95 @@ function updateTrafficLayer(segs) {
   if (source) source.setData(buildGeoJSON(segs))
 }
 
-function updateBottleneck(bn) {
-  updateBottleneckHighlight(bn)
-  updateBottleneckMarker(bn)
-}
-
-/** Resalta el segmento del cuello de botella sobre el mapa. */
-function updateBottleneckHighlight(bn) {
+/** Resalta en el mapa todos los segmentos que son cuellos de botella. */
+function updateBottleneckHighlight(bottlenecks) {
   if (!map) return
-  const filter = ['==', ['get', 'segmentId'], bn?.segmentId ?? '__none__']
+  const ids = (bottlenecks ?? []).map((b) => b.segmentId)
+  const filter = ['in', ['get', 'segmentId'], ['literal', ids]]
   for (const layerId of ['bottleneck-casing', 'bottleneck-core']) {
     if (map.getLayer(layerId)) map.setFilter(layerId, filter)
   }
 }
 
-/** Marcador del cuello de botella: pin con anillo pulsante y etiqueta. */
-function updateBottleneckMarker(bn) {
+/** Marcadores de los cuellos de botella: badge redondo con '!' y anillo pulsante. */
+function updateBottleneckMarkers(bottlenecks) {
   if (!map) return
-  if (bottleneckMarker) {
-    bottleneckMarker.remove()
-    bottleneckMarker = null
+  bottleneckMarkers.forEach((m) => m.remove())
+  bottleneckMarkers = []
+  for (const bn of bottlenecks ?? []) {
+    if (bn.lat == null || bn.lng == null) continue
+    const lvl = levelFromRatio(bn.speedRatio ?? 1)
+    const el = document.createElement('div')
+    el.className = `bn-marker lvl-${lvl.key}`
+    el.title = bn.segmentName
+    el.innerHTML = `
+      <span class="bn-ring"></span>
+      <span class="bn-badge">!</span>
+    `
+    el.addEventListener('click', () => {
+      showSegmentPopup(bn, { lng: bn.lng, lat: bn.lat })
+    })
+    bottleneckMarkers.push(new maplibregl.Marker({ element: el })
+      .setLngLat([bn.lng, bn.lat])
+      .addTo(map))
   }
-  if (!bn) return
-
-  const el = document.createElement('div')
-  el.className = 'bottleneck-marker'
-  el.innerHTML = `
-    <span class="bn-ring"></span>
-    <span class="bn-pin">🚨</span>
-    <span class="bn-tag">Cuello de botella</span>
-  `
-  el.addEventListener('click', () => {
-    showSegmentPopup(bn, { lng: bn.lng ?? METRO_CENTER[0], lat: bn.lat ?? METRO_CENTER[1] })
-  })
-
-  bottleneckMarker = new maplibregl.Marker({ element: el })
-    .setLngLat([bn.lng ?? METRO_CENTER[0], bn.lat ?? METRO_CENTER[1]])
-    .addTo(map)
 }
 
-// Centrar el mapa en el segmento solicitado desde el feed
+/** Marcadores de alertas (policía, accidentes, obras, cierres). */
+function updateAlertMarkers(alerts) {
+  if (!map) return
+  alertMarkers.forEach((m) => m.remove())
+  alertMarkers = []
+  for (const alert of alerts ?? []) {
+    if (alert.lat == null || alert.lng == null) continue
+    const el = document.createElement('div')
+    el.className = `alert-marker type-${(alert.type ?? 'OTHER').toLowerCase()}`
+    el.innerHTML = `<span class="alert-ico">${esc(ALERT_ICONS[alert.type] ?? '🛈')}</span>`
+    el.title = alert.title
+    el.addEventListener('click', () => showAlertPopup(alert))
+    alertMarkers.push(new maplibregl.Marker({ element: el })
+      .setLngLat([alert.lng, alert.lat])
+      .addTo(map))
+  }
+}
+
+function updateBottlenecks(bottlenecks) {
+  updateBottleneckHighlight(bottlenecks)
+  updateBottleneckMarkers(bottlenecks)
+}
+
+// Centrar el mapa en el segmento o alerta solicitado desde el feed
 watch(() => store.focusSegmentId, (id) => {
   if (!map || !id) return
   const seg = store.segments.find((s) => s.segmentId === id)
-  if (!seg) return
-  const coords = seg.geometry?.coordinates ?? [[seg.lng ?? METRO_CENTER[0], seg.lat ?? METRO_CENTER[1]]]
-  if (coords.length > 1) {
-    const bounds = coords.reduce(
-      (b, c) => [
-        [Math.min(b[0][0], c[0]), Math.min(b[0][1], c[1])],
-        [Math.max(b[1][0], c[0]), Math.max(b[1][1], c[1])]
-      ],
-      [[coords[0][0], coords[0][1]], [coords[0][0], coords[0][1]]]
-    )
-    map.fitBounds(bounds, { padding: 90, duration: 700 })
+  if (seg) {
+    const coords = seg.geometry?.coordinates ?? [[seg.lng ?? METRO_CENTER[0], seg.lat ?? METRO_CENTER[1]]]
+    if (coords.length > 1) {
+      const bounds = coords.reduce(
+        (b, c) => [
+          [Math.min(b[0][0], c[0]), Math.min(b[0][1], c[1])],
+          [Math.max(b[1][0], c[0]), Math.max(b[1][1], c[1])]
+        ],
+        [[coords[0][0], coords[0][1]], [coords[0][0], coords[0][1]]]
+      )
+      map.fitBounds(bounds, { padding: 90, duration: 700 })
+    } else {
+      map.flyTo({ center: coords[0], zoom: 14, duration: 700 })
+    }
+    showSegmentPopup(seg, { lng: coords[0][0], lat: coords[0][1] })
   } else {
-    map.flyTo({ center: coords[0], zoom: 14, duration: 700 })
+    const alert = store.alerts.find((a) => a.id === id)
+    if (alert) {
+      map.flyTo({ center: [alert.lng, alert.lat], zoom: 15, duration: 700 })
+      showAlertPopup(alert)
+    }
   }
-  showSegmentPopup(seg, { lng: coords[0][0], lat: coords[0][1] })
   store.focusSegmentId = null
 })
 
 watch(() => store.segments, updateTrafficLayer, { deep: true })
-watch(() => store.bottleneck, updateBottleneck)
+watch(() => store.bottlenecks, updateBottlenecks, { deep: true })
+watch(() => store.alerts, updateAlertMarkers, { deep: true })
 </script>
 
 <style scoped>
@@ -437,6 +554,13 @@ watch(() => store.bottleneck, updateBottleneck)
   color: #334155;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   user-select: none;
+  transition: background 0.25s, color 0.25s;
+}
+
+.legend.dark {
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .legend-item {
@@ -457,8 +581,35 @@ watch(() => store.bottleneck, updateBottleneck)
   padding-left: 0.8rem;
 }
 
+.legend.dark .legend-bn {
+  border-left-color: rgba(255, 255, 255, 0.15);
+}
+
 .bn-mini {
-  font-size: 0.8rem;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.legend-alerts {
+  border-left: 1px solid #e2e8f0;
+  padding-left: 0.8rem;
+  gap: 0.45rem;
+}
+
+.legend.dark .legend-alerts {
+  border-left-color: rgba(255, 255, 255, 0.15);
+}
+
+.alert-mini {
+  font-size: 0.78rem;
   line-height: 1;
 }
 
@@ -619,6 +770,27 @@ watch(() => store.bottleneck, updateBottleneck)
   transform: translateX(-50%) scale(0.96);
 }
 
+/* ─── Botón modo día/noche ─────────────────────────────────────────────── */
+.night-toggle {
+  position: absolute;
+  top: 4.6rem;
+  right: 0.9rem;
+  z-index: 10;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(6px);
+  font-size: 1.1rem;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+  transition: transform 0.12s, box-shadow 0.15s;
+}
+
+.night-toggle:hover { transform: scale(1.1); }
+.night-toggle:active { transform: scale(0.92); }
+
 /* ─── Sin conexión ─────────────────────────────────────────────────────── */
 .offline-banner {
   position: absolute;
@@ -641,24 +813,53 @@ watch(() => store.bottleneck, updateBottleneck)
 </style>
 
 <style>
-/* ─── Marcador del cuello de botella ───────────────────────────────────── */
-.bottleneck-marker {
+/* ─── Marcador de cuello de botella (badge '!' + anillo pulsante) ───────── */
+.bn-marker {
   position: relative;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   cursor: pointer;
 }
 
-.bn-pin {
+.bn-badge {
   position: absolute;
-  inset: 0;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 1.8rem;
+  color: #fff;
+  font-family: 'Baloo 2', 'Nunito', sans-serif;
+  font-size: 1.15rem;
+  font-weight: 900;
+  border: 3px solid #ffffff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   z-index: 2;
-  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.45));
-  animation: marker-bounce 1.6s ease-in-out infinite;
+  background: linear-gradient(135deg, #f87171 0%, #dc2626 70%);
 }
+
+.bn-marker.lvl-lento .bn-badge { background: linear-gradient(135deg, #fde047 0%, #ca8a04 75%); }
+.bn-marker.lvl-congestionado .bn-badge { background: linear-gradient(135deg, #fb923c 0%, #ea580c 75%); }
+.bn-marker.lvl-fluido .bn-badge { background: linear-gradient(135deg, #4ade80 0%, #16a34a 75%); }
+
+/* Punta inferior estilo Waze */
+.bn-badge::after {
+  content: '';
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 10px solid #dc2626;
+}
+
+.bn-marker.lvl-lento .bn-badge::after { border-top-color: #ca8a04; }
+.bn-marker.lvl-congestionado .bn-badge::after { border-top-color: #ea580c; }
+.bn-marker.lvl-fluido .bn-badge::after { border-top-color: #16a34a; }
 
 .bn-ring {
   position: absolute;
@@ -668,32 +869,39 @@ watch(() => store.bottleneck, updateBottleneck)
   animation: bn-pulse 1.6s ease-out infinite;
 }
 
-.bn-tag {
-  position: absolute;
-  top: calc(100% - 4px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  background: #dc2626;
-  color: #fff;
-  font-size: 0.62rem;
-  font-weight: 800;
-  font-family: 'Nunito', sans-serif;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
-  z-index: 3;
-}
-
 @keyframes bn-pulse {
   0%   { transform: scale(0.5); opacity: 0.95; }
   70%  { transform: scale(2.1); opacity: 0; }
   100% { transform: scale(2.1); opacity: 0; }
 }
 
-@keyframes marker-bounce {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-6px); }
+/* ─── Marcador de alertas (policía, accidentes, obras...) ───────────────── */
+.alert-marker {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  border: 2.5px solid #64748b;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  font-size: 0.98rem;
+  transition: transform 0.12s;
+}
+
+.alert-marker:hover { transform: scale(1.18); }
+
+.alert-marker.type-police { border-color: #2563eb; background: #eff6ff; }
+.alert-marker.type-accident { border-color: #dc2626; background: #fef2f2; }
+.alert-marker.type-works { border-color: #ea580c; background: #fff7ed; }
+.alert-marker.type-closure { border-color: #7c3aed; background: #f5f3ff; }
+.alert-marker.type-hazard { border-color: #d97706; background: #fffbeb; }
+.alert-marker.type-other { border-color: #64748b; background: #f8fafc; }
+
+.alert-ico {
+  line-height: 1;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
 }
 
 /* ─── Popups de MapLibre — tema claro ──────────────────────────────────── */

@@ -3,6 +3,7 @@ package co.medellin.trancones.service;
 import co.medellin.trancones.config.TrafficProperties;
 import co.medellin.trancones.dto.*;
 import co.medellin.trancones.dto.external.*;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -12,8 +13,11 @@ import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -53,15 +57,23 @@ public class TrafficAggregatorService {
         this.props = props;
     }
 
+    /** Resultado de un ciclo de agregación: segmentos + alertas. */
+    public record TrafficAggregation(List<SegmentStatus> segments, List<TrafficAlert> alerts) {}
+
     /**
-     * Agrega tráfico de las 4 fuentes en paralelo.
-     * Si una fuente falla o no está configurada, se omite y se continúa.
+     * Agrega tráfico de las fuentes en paralelo (segmentos de congestión y
+     * alertas de incidentes). Si una fuente falla o no está configurada,
+     * se omite y se continúa con las disponibles.
      */
-    public Flux<SegmentStatus> getAggregatedTraffic() {
+    public Mono<TrafficAggregation> getAggregatedTraffic() {
         long start = System.currentTimeMillis();
-        return Flux.merge(fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
-                .doOnComplete(() -> log.info("[Aggregator] Ciclo completado en {} ms",
-                        System.currentTimeMillis() - start));
+        return Mono.zip(
+                        Flux.merge(fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
+                                .collectList(),
+                        fetchTomTomIncidents().collectList())
+                .map(t -> new TrafficAggregation(t.getT1(), t.getT2()))
+                .doOnNext(agg -> log.info("[Aggregator] Ciclo completado en {} ms — {} segmentos, {} alertas",
+                        System.currentTimeMillis() - start, agg.segments().size(), agg.alerts().size()));
     }
 
     // ─── TomTom Traffic API (flujo en tiempo real, free tier) ──────────────
@@ -263,6 +275,140 @@ public class TrafficAggregatorService {
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+    }
+
+    // ─── TomTom Traffic Incidents (alertas: policía, accidentes, obras) ─────
+
+    /** Área del Valle de Aburrá para consultar incidentes (west,south,east,north). */
+    private static final String INCIDENTS_BBOX = "-75.74,6.08,-75.36,6.44";
+
+    /** Máximo de alertas por ciclo (evita saturar el mapa). */
+    private static final int MAX_ALERTS = 50;
+
+    /** Categorías que se muestran como alertas (se descartan ruido como niebla/hielo). */
+    private static final Set<Integer> RELEVANT_CATEGORIES = Set.of(
+            2, 8, 9, 10, 15, 16, 18, 19, 20, 21, 22, 23);
+
+    /** Categorías de icono de TomTom → tipo de alerta para el frontend. */
+    private static final Map<Integer, String> INCIDENT_TYPE = new LinkedHashMap<>();
+    private static final Map<Integer, String> INCIDENT_NAME = new LinkedHashMap<>();
+
+    static {
+        INCIDENT_TYPE.put(2, "ACCIDENT");
+        INCIDENT_TYPE.put(8, "CLOSURE");
+        INCIDENT_TYPE.put(9, "CLOSURE");
+        INCIDENT_TYPE.put(10, "WORKS");
+        INCIDENT_TYPE.put(18, "WORKS");
+        INCIDENT_TYPE.put(19, "POLICE");
+        INCIDENT_TYPE.put(15, "HAZARD");
+        INCIDENT_TYPE.put(16, "HAZARD");
+        INCIDENT_TYPE.put(20, "HAZARD");
+        INCIDENT_TYPE.put(21, "HAZARD");
+        INCIDENT_TYPE.put(22, "HAZARD");
+        INCIDENT_TYPE.put(23, "HAZARD");
+
+        INCIDENT_NAME.put(1, "Incidente desconocido");
+        INCIDENT_NAME.put(2, "Accidente");
+        INCIDENT_NAME.put(3, "Niebla");
+        INCIDENT_NAME.put(4, "Condiciones peligrosas");
+        INCIDENT_NAME.put(5, "Lluvia intensa");
+        INCIDENT_NAME.put(6, "Hielo en la vía");
+        INCIDENT_NAME.put(7, "Trancón");
+        INCIDENT_NAME.put(8, "Carril cerrado");
+        INCIDENT_NAME.put(9, "Vía cerrada");
+        INCIDENT_NAME.put(10, "Obras en la vía");
+        INCIDENT_NAME.put(11, "Viento fuerte");
+        INCIDENT_NAME.put(12, "Inundación");
+        INCIDENT_NAME.put(13, "Desvío");
+        INCIDENT_NAME.put(14, "Congestión");
+        INCIDENT_NAME.put(15, "Vehículo averiado");
+        INCIDENT_NAME.put(16, "Conducción temeraria");
+        INCIDENT_NAME.put(17, "Quitanieves");
+        INCIDENT_NAME.put(18, "Construcción");
+        INCIDENT_NAME.put(19, "Policía");
+        INCIDENT_NAME.put(20, "Vehículo incendiado");
+        INCIDENT_NAME.put(21, "Bomberos");
+        INCIDENT_NAME.put(22, "Cámara de velocidad");
+        INCIDENT_NAME.put(23, "Obstrucción");
+        INCIDENT_NAME.put(24, "Otro");
+        INCIDENT_NAME.put(25, "Evento programado");
+    }
+
+    /**
+     * Consulta los incidentes en tiempo real de TomTom en el área metropolitana.
+     * Requiere la misma TOMTOM_API_KEY (free tier incluye incidentes).
+     */
+    Flux<TrafficAlert> fetchTomTomIncidents() {
+        if (blank(props.getTomtom().getApiKey())) {
+            return Flux.empty(); // ya se advirtió en fetchFromTomTom()
+        }
+        return tomtomWebClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        // v5 usa path limpio (sin style/zoom) y no admite fields/categoryFilter
+                        .path("/traffic/services/5/incidentDetails")
+                        .queryParam("key", props.getTomtom().getApiKey())
+                        .queryParam("bbox", INCIDENTS_BBOX)
+                        .queryParam("language", "es-ES")
+                        .build())
+                .retrieve()
+                .bodyToMono(TomTomIncidentsResponse.class)
+                .flatMapMany(resp -> Flux.fromIterable(mapTomTomIncidents(resp)))
+                .onErrorResume(e -> {
+                    log.warn("[Aggregator] Error en incidentes TomTom: {}", e.getMessage());
+                    return Flux.empty();
+                });
+    }
+
+    private List<TrafficAlert> mapTomTomIncidents(TomTomIncidentsResponse resp) {
+        if (resp == null || resp.incidents() == null) return List.of();
+        // v5 no incluye id ni descripciones: se genera id desde las coordenadas,
+        // se deduplican incidentes en la misma cuadra y se acota la cantidad.
+        LinkedHashMap<Long, TrafficAlert> dedup = new LinkedHashMap<>();
+        for (var incident : resp.incidents()) {
+            if (dedup.size() >= MAX_ALERTS) break;
+            var props = incident.properties();
+            double[] coord = incidentCentroid(incident.geometry());
+            if (props == null || coord == null) continue;
+            int cat = props.iconCategory() != null ? props.iconCategory() : 1;
+            if (!RELEVANT_CATEGORIES.contains(cat)) continue;
+
+            String type = INCIDENT_TYPE.getOrDefault(cat, "OTHER");
+            String title = INCIDENT_NAME.getOrDefault(cat, "Incidente");
+            // Dedupe por cuadrante de ~1 km (2 decimales) para agrupar cierres
+            // consecutivos del mismo corredor en un solo marcador.
+            long key = Math.round(coord[0] * 100) * 10000L + Math.round(coord[1] * 100);
+            dedup.putIfAbsent(key, new TrafficAlert(
+                    "tomtom-inc-" + key, type, title, title,
+                    coord[1], coord[0], cat));
+        }
+        return new ArrayList<>(dedup.values());
+    }
+
+    /**
+     * Extrae un punto representativo [lon, lat] de la geometría del incidente.
+     * Point → sus coordenadas; LineString → el punto medio de la polilínea.
+     */
+    private double[] incidentCentroid(TomTomIncidentsResponse.Geometry geometry) {
+        if (geometry == null || geometry.coordinates() == null || !geometry.coordinates().isArray()) {
+            return null;
+        }
+        JsonNode coords = geometry.coordinates();
+        if (coords.isEmpty()) return null;
+
+        // Point: [lon, lat]
+        if (coords.get(0).isNumber()) {
+            return new double[] { coords.get(0).asDouble(), coords.get(1).asDouble() };
+        }
+        // LineString: [[lon, lat], ...] → punto medio
+        List<double[]> points = new ArrayList<>();
+        for (JsonNode c : coords) {
+            if (c.isArray() && c.size() >= 2) {
+                points.add(new double[] { c.get(0).asDouble(), c.get(1).asDouble() });
+            }
+        }
+        if (points.isEmpty()) return null;
+        double[] mid = points.get(points.size() / 2);
+        return new double[] { mid[0], mid[1] };
     }
 
     // ─── Waze for Cities API (partner feed) ─────────────────────────────────
