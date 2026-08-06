@@ -1,0 +1,31 @@
+# Dependencias y builds
+node_modules/
+dist/
+target/
+*.class
+
+# Logs
+*.log
+
+# Secretos y variables de entorno reales (usar .env.example como plantilla)
+.env
+.env.local
+.env.*.local
+
+# Bases de datos locales
+*.db
+*.db-shm
+*.db-wal
+
+# Directorios de herramientas
+.freebuff/
+.kiro/
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Otros
+desktop-v2.db*

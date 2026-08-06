@@ -1,0 +1,84 @@
+spring:
+  application:
+    name: trancones-medellin
+  r2dbc:
+    url: r2dbc:postgresql://localhost:5432/trancones
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+  sql:
+    init:
+      # Ejecuta schema.sql (idempotente, CREATE TABLE IF NOT EXISTS)
+      mode: always
+
+server:
+  port: 8080
+
+# ─── Seguridad ─────────────────────────────────────────────────────────────
+# JWT_SECRET: clave HMAC-SHA256 de AL MENOS 32 caracteres. Si no se configura,
+# se genera una aleatoria en cada arranque (los tokens no sobreviven reinicios).
+# ADMIN_PASSWORD: contraseña inicial del usuario admin. Si no se configura,
+# se genera una aleatoria que se imprime UNA VEZ en el log de arranque.
+security:
+  jwt:
+    secret: ${JWT_SECRET:}
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:15}
+  admin-username: ${ADMIN_USERNAME:admin}
+  admin-password: ${ADMIN_PASSWORD:}
+  login:
+    max-attempts: 5
+    window-minutes: 15
+    # Solo activar si el backend está detrás de un proxy de confianza
+    # que reescribe X-Forwarded-For (nginx, ALB, etc.).
+    trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
+
+traffic:
+  sources:
+    google:
+      api-key: ${GOOGLE_MAPS_API_KEY:}
+      base-url: ${GOOGLE_ROUTES_BASE_URL:https://routes.googleapis.com}
+    waze:
+      # URL del feed de Waze for Cities (requiere aprobación institucional)
+      base-url: ${WAZE_API_URL:}
+    simm:
+      # Datos abiertos Medellín (CKAN). Público; solo falta el resource_id
+      # del dataset de sensores de velocidad (ver .env.example).
+      base-url: ${SIMM_API_URL:https://datosabiertos.medellin.gov.co/api}
+      resource-id: ${SIMM_RESOURCE_ID:}
+      fields:
+        speed: ${SIMM_SPEED_FIELD:velocidad}
+        free-flow: ${SIMM_FREE_FLOW_FIELD:velocidad_libre}
+        name: ${SIMM_NAME_FIELD:direccion}
+        lat: ${SIMM_LAT_FIELD:lat}
+        lng: ${SIMM_LNG_FIELD:lng}
+    tomtom:
+      # TomTom Traffic API — free tier, sin aprobación (recomendada)
+      api-key: ${TOMTOM_API_KEY:}
+      base-url: ${TOMTOM_BASE_URL:https://api.tomtom.com}
+      points:
+        - { name: 'Autopista Norte · Bello', lat: 6.2900, lon: -75.5715 }
+        - { name: 'Avenida 80 · Estadio', lat: 6.2490, lon: -75.6070 }
+        - { name: 'Av. El Poblado · Obelisco', lat: 6.2210, lon: -75.5810 }
+        - { name: 'Av. Las Vegas · Envigado', lat: 6.1630, lon: -75.5800 }
+        - { name: 'Autopista Sur · Itagüí', lat: 6.1300, lon: -75.5970 }
+        - { name: 'Av. Oriental · Centro', lat: 6.2220, lon: -75.5720 }
+        - { name: 'Calle San Juan · Centro', lat: 6.2510, lon: -75.5750 }
+        - { name: 'Av. La Playa · Centro', lat: 6.2490, lon: -75.5720 }
+        - { name: 'Av. Regional · Belén', lat: 6.2200, lon: -75.5860 }
+        - { name: 'Av. Bolívar · Niquía', lat: 6.2680, lon: -75.5620 }
+        - { name: 'Av. Guayabal · Aeropuerto', lat: 6.1920, lon: -75.5900 }
+        - { name: 'Troncal 34 · Itagüí', lat: 6.1590, lon: -75.6110 }
+  bottleneck:
+    speed-ratio-threshold: 0.3
+  refresh-interval-seconds: 30
+
+vapid:
+  public-key: ${VAPID_PUBLIC_KEY:}
+  private-key: ${VAPID_PRIVATE_KEY:}
+  subject: mailto:admin@trancones.co
+
+cors:
+  allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
