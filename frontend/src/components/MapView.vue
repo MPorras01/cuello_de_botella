@@ -5,6 +5,10 @@
     <!-- Feed de trancones en vivo (estilo Waze, plegable) -->
     <TrafficFeed />
 
+    <!-- Informes de usuarios: modal de confirmación y panel de chat -->
+    <ReportFormModal />
+    <ChatPanel />
+
     <!-- Leyenda compacta -->
     <div class="legend" :class="{ dark: darkMode }">
       <div v-for="lvl in LEVELS" :key="lvl.key" class="legend-item">
@@ -30,13 +34,25 @@
       🧪 Modo demo · sin API keys
     </div>
 
-    <!-- Botón: reportar (demo) -->
-    <button class="report-fab" @click="report" aria-label="Reportar un incidente">+ 🚧</button>
+    <!-- Botón: reportar (coloca un informe con un clic en el mapa) -->
+    <button
+      class="report-fab"
+      :class="{ placing: reports.placing }"
+      @click="togglePlacing"
+      :title="reports.placing ? 'Clic en el mapa para colocar el informe' : 'Reportar un incidente'"
+    >
+      {{ reports.placing ? '📍' : '+ 🚧' }}
+    </button>
 
-    <!-- Toast de reporte -->
+    <!-- HUD de modo colocación -->
     <transition name="toast">
-      <div v-if="toast" class="toast">¡Gracias! 🚦 Tu reporte ayuda a otros conductores <em>(demo)</em></div>
+      <div v-if="reports.placing" class="placing-hud">
+        👆 Haz clic en el mapa donde está el incidente <button class="hud-cancel" @click="reports.stopPlacing()">Cancelar</button>
+      </div>
     </transition>
+
+    <!-- Botón: abrir chat con la comunidad -->
+    <button class="chat-fab" :class="{ active: chat.open }" @click="chat.toggleOpen()" title="Chat con la comunidad">💬</button>
 
     <!-- Badge del cuello de botella (el peor, con contador si hay varios) -->
     <div v-if="store.bottlenecks.length" class="bottleneck-badge" :class="levelFromRatio(store.bottlenecks[0].speedRatio ?? 1).key">
@@ -67,12 +83,19 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { useTrafficStore } from '../stores/trafficStore'
+import { useReportsStore } from '../stores/reportsStore'
+import { useChatStore } from '../stores/chatStore'
+import { useAuthStore } from '../stores/authStore'
 import TrafficFeed from './TrafficFeed.vue'
+import ReportFormModal from './ReportFormModal.vue'
+import ChatPanel from './ChatPanel.vue'
 import { LEVELS, levelFromRatio, colorFromRatio, labelNivel } from '../utils/trafficLevels'
 
 const store = useTrafficStore()
+const reports = useReportsStore()
+const chat = useChatStore()
+const auth = useAuthStore()
 const mapContainer = ref(null)
-const toast = ref('')
 const darkMode = ref(
   localStorage.getItem('map-theme')
     ? localStorage.getItem('map-theme') === 'dark'
@@ -81,11 +104,11 @@ const darkMode = ref(
 
 let map = null
 let popup = null
-let toastTimer = null
 let firstLoad = true
 let fallbackIdx = 0
 let alertMarkers = []
 let bottleneckMarkers = []
+let reportMarkers = []
 
 // ─── Geografía: Medellín y área metropolitana (Valle de Aburrá) ─────────────
 const METRO_CENTER = [-75.5748, 6.2442]
@@ -103,6 +126,10 @@ const DARK_STYLES = [
 ]
 
 const ALERT_ICONS = {
+  POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️', OTHER: '🛈'
+}
+
+const REPORT_ICONS = {
   POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️', OTHER: '🛈'
 }
 
@@ -192,10 +219,41 @@ function showAlertPopup(alert) {
   `).addTo(map)
 }
 
-function report() {
-  toast.value = true
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = false }, 2800)
+function showReportPopup(report) {
+  if (!map) return
+  const canDelete = auth.username === report.username
+  if (!popup) popup = new maplibregl.Popup({ offset: 14, closeButton: false })
+  popup.setLngLat([report.lng, report.lat]).setHTML(`
+    <div class="wz-popup">
+      <strong>${esc(REPORT_ICONS[report.type] ?? '🛈')} Informe de ${esc(report.username)}</strong>
+      <span class="wz-popup-level">${esc(typeLabel(report.type))}</span>
+      <span class="wz-popup-meta">${esc(report.description || 'Sin descripción')}</span>
+      <span class="wz-popup-meta">🕒 ${esc(fmtReportTime(report.createdAt))}</span>
+      ${canDelete ? `<button class="wz-popup-del" data-report-id="${esc(report.id)}">🗑 Borrar mi informe</button>` : ''}
+    </div>
+  `).addTo(map)
+}
+
+function typeLabel(type) {
+  return {
+    POLICE: '👮 Policía', ACCIDENT: '⚠️ Accidente', WORKS: '🚧 Obras',
+    CLOSURE: '⛔ Vía cerrada', HAZARD: '☢️ Peligro', OTHER: '🛈 Otro'
+  }[type] ?? 'Otro'
+}
+
+function fmtReportTime(ts) {
+  if (!ts) return ''
+  return new Date(ts).toLocaleString('es-CO', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+  })
+}
+
+function togglePlacing() {
+  if (reports.placing) {
+    reports.stopPlacing()
+  } else {
+    reports.startPlacing()
+  }
 }
 
 function toggleDarkMode() {
@@ -375,7 +433,32 @@ function initTrafficLayers() {
   updateBottleneckHighlight(store.bottlenecks)
   updateBottleneckMarkers(store.bottlenecks)
   updateAlertMarkers(store.alerts)
+  updateReportMarkers(reports.reports)
 }
+
+/**
+ * Clic en el mapa: si el modo colocación está activo, registra la coordenada
+ * del informe y abre el modal de confirmación.
+ */
+function onMapClick(e) {
+  if (!reports.placing) return
+  reports.setPendingReport(e.lngLat.lat, e.lngLat.lng)
+}
+
+/**
+ * Delegación global: clic en "🗑 Borrar mi informe" dentro de cualquier popup.
+ * Función nombrada para poder removerla en onUnmounted (evita listeners
+ * acumulados si MapView se desmonta y vuelve a montar con el logout/login).
+ */
+async function onDeleteReportClick(e) {
+  const btn = e.target.closest?.('.wz-popup-del')
+  if (!btn) return
+  e.stopPropagation()
+  const id = Number(btn.dataset.reportId)
+  await reports.deleteReport(id)
+  popup?.remove()
+}
+document.addEventListener('click', onDeleteReportClick)
 
 onMounted(() => {
   map = new maplibregl.Map({
@@ -417,10 +500,19 @@ onMounted(() => {
       focusMetro()
     }
   })
+
+  // Modo colocación de informes con clic en el mapa
+  map.on('click', onMapClick)
+
+  // Polling de informes y chat de la comunidad
+  reports.startPolling()
+  chat.fetchGroups()
 })
 
 onUnmounted(() => {
-  if (toastTimer) clearTimeout(toastTimer)
+  document.removeEventListener('click', onDeleteReportClick)
+  reports.stopPolling()
+  chat.stopPolling()
   if (map) {
     map.remove()
     map = null
@@ -493,6 +585,44 @@ function updateAlertMarkers(alerts) {
   }
 }
 
+/**
+ * Marcadores de informes de usuario con popup de información.
+ * Hace diff por id: solo crea los nuevos y elimina los borrados, para que el
+ * polling de 20 s no recree los marcadores existentes (evita que los clics
+ * caigan al canvas y que los popups se pierdan).
+ */
+function updateReportMarkers(reportList) {
+  if (!map) return
+  const next = reportList ?? []
+  const nextIds = new Set(next.map((r) => String(r.id)))
+
+  // Eliminar marcadores que ya no existen
+  for (let i = reportMarkers.length - 1; i >= 0; i--) {
+    if (!nextIds.has(String(reportMarkers[i].reportId))) {
+      reportMarkers[i].marker.remove()
+      reportMarkers.splice(i, 1)
+    }
+  }
+
+  const existingIds = new Set(reportMarkers.map((m) => String(m.reportId)))
+  for (const report of next) {
+    if (report.lat == null || report.lng == null) continue
+    if (existingIds.has(String(report.id))) continue
+    const el = document.createElement('div')
+    el.className = `report-marker type-${(report.type ?? 'OTHER').toLowerCase()}`
+    el.innerHTML = `<span class="report-ico">${esc(REPORT_ICONS[report.type] ?? '🛈')}</span>`
+    el.title = `${typeLabel(report.type)} — ${report.username}`
+    el.addEventListener('click', (e) => {
+      e.stopPropagation()
+      showReportPopup(report)
+    })
+    const marker = new maplibregl.Marker({ element: el })
+      .setLngLat([report.lng, report.lat])
+      .addTo(map)
+    reportMarkers.push({ reportId: report.id, marker })
+  }
+}
+
 function updateBottlenecks(bottlenecks) {
   updateBottleneckHighlight(bottlenecks)
   updateBottleneckMarkers(bottlenecks)
@@ -530,6 +660,10 @@ watch(() => store.focusSegmentId, (id) => {
 watch(() => store.segments, updateTrafficLayer, { deep: true })
 watch(() => store.bottlenecks, updateBottlenecks, { deep: true })
 watch(() => store.alerts, updateAlertMarkers, { deep: true })
+watch(() => reports.reports, updateReportMarkers, { deep: true })
+watch(() => reports.placing, (placing) => {
+  if (map) map.getCanvas().style.cursor = placing ? 'crosshair' : ''
+})
 </script>
 
 <style scoped>
@@ -643,7 +777,7 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
 .report-fab {
   position: absolute;
   right: 0.9rem;
-  bottom: 5.2rem;
+  bottom: 9.2rem;
   z-index: 10;
   width: 3.3rem;
   height: 3.3rem;
@@ -667,23 +801,80 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
   transform: scale(0.94);
 }
 
-.toast {
+.report-fab.placing {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  box-shadow: 0 8px 22px rgba(220, 38, 38, 0.5);
+  animation: fab-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes fab-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.1); }
+}
+
+/* HUD de modo colocación */
+.placing-hud {
   position: absolute;
-  bottom: 9.4rem;
-  right: 0.9rem;
+  top: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 12;
   background: #1e293b;
   color: #f1f5f9;
-  border-radius: 12px;
-  padding: 0.6rem 0.9rem;
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
   font-size: 0.8rem;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.4);
-  max-width: 240px;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  white-space: nowrap;
 }
 
-.toast em {
-  color: #93c5fd;
-  font-style: normal;
+.hud-cancel {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: #f1f5f9;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.hud-cancel:hover { background: rgba(255, 255, 255, 0.15); }
+
+/* ─── FAB chat ─────────────────────────────────────────────────────────── */
+.chat-fab {
+  position: absolute;
+  right: 0.9rem;
+  bottom: 5.2rem;
+  z-index: 10;
+  width: 3.3rem;
+  height: 3.3rem;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  font-size: 1.35rem;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(22, 163, 74, 0.45);
+  transition: transform 0.12s, box-shadow 0.15s;
+}
+
+.chat-fab:hover {
+  transform: scale(1.08);
+  box-shadow: 0 10px 28px rgba(22, 163, 74, 0.55);
+}
+
+.chat-fab:active {
+  transform: scale(0.94);
+}
+
+.chat-fab.active {
+  background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
 }
 
 .toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
@@ -924,6 +1115,58 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
 
 .alert-marker:hover .alert-ico { transform: scale(1.22); }
 
+/* ─── Marcador de informe de usuario (capa de usuario) ────────────────────
+ * Mismo patrón que las alertas: animaciones solo en el interior, el elemento
+ * lo posiciona MapLibre con transform inline. */
+.report-marker {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2.5px solid #64748b;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  position: relative;
+}
+
+.report-marker.type-police { border-color: #2563eb; background: #eff6ff; }
+.report-marker.type-accident { border-color: #dc2626; background: #fef2f2; }
+.report-marker.type-works { border-color: #ea580c; background: #fff7ed; }
+.report-marker.type-closure { border-color: #7c3aed; background: #f5f3ff; }
+.report-marker.type-hazard { border-color: #d97706; background: #fffbeb; }
+.report-marker.type-other { border-color: #0ea5e9; background: #f0f9ff; }
+
+.report-ico {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  line-height: 1;
+  font-size: 1.05rem;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+  transition: transform 0.12s;
+}
+
+.report-marker:hover .report-ico { transform: scale(1.22); }
+
+.report-marker::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  border-radius: 50%;
+  border: 2px dashed rgba(15, 23, 42, 0.35);
+  animation: report-spin 9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes report-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* ─── Popups de MapLibre — tema claro ──────────────────────────────────── */
 .maplibregl-popup-content {
   background: #ffffff;
@@ -953,4 +1196,20 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
   color: #64748b;
   font-size: 0.72rem;
 }
+
+.wz-popup-del {
+  margin-top: 0.45rem;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.wz-popup-del:hover { background: #fee2e2; }
 </style>

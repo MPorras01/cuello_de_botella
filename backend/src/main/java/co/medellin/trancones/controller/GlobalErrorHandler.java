@@ -49,6 +49,16 @@ public class GlobalErrorHandler {
         return ResponseEntity.badRequest().body(Map.of("error", "Cuerpo de solicitud inválido"));
     }
 
+    /**
+     * Errores de reglas de negocio (límite de informes, grupo duplicado,
+     * borrado de informes ajenos...): respuesta 400 con el mensaje del dominio.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("[Business] {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> handleAll(Exception ex) {
         log.error("[Error] Excepción no controlada: {}", ex.getMessage(), ex);
