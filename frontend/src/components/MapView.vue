@@ -208,7 +208,9 @@ onMounted(() => {
       }
     })
 
-    // Línea principal: gradiente de color a lo largo de la vía según congestión
+    // Línea principal: gradiente de color a lo largo de la vía según congestión.
+    // Nota: line-gradient exige line-width constante (6) y no soporta
+    // line-dasharray ni line-blur en la misma capa — no mezclar.
     map.addLayer({
       id: 'traffic-segments',
       type: 'line',
