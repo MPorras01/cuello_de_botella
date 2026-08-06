@@ -442,7 +442,11 @@ function updateBottleneckHighlight(bottlenecks) {
   }
 }
 
-/** Marcadores de los cuellos de botella: badge redondo con '!' y anillo pulsante. */
+/**
+ * Marcadores de los cuellos de botella: pin SVG con la punta anclada al
+ * punto exacto (anchor 'bottom'), de modo que el icono queda "plantado"
+ * sobre la vía y no se desfasa al mover el mapa.
+ */
 function updateBottleneckMarkers(bottlenecks) {
   if (!map) return
   bottleneckMarkers.forEach((m) => m.remove())
@@ -454,13 +458,18 @@ function updateBottleneckMarkers(bottlenecks) {
     el.className = `bn-marker lvl-${lvl.key}`
     el.title = bn.segmentName
     el.innerHTML = `
+      <span class="bn-shadow"></span>
       <span class="bn-ring"></span>
-      <span class="bn-badge">!</span>
+      <svg class="bn-svg" viewBox="0 0 40 48" width="40" height="48" aria-hidden="true">
+        <path class="bn-path" d="M20 2C9.5 2 2 9.5 2 20c0 10.5 18 26 18 26s18-15.5 18-26C38 9.5 30.5 2 20 2z" />
+        <circle class="bn-dot" cx="20" cy="19" r="8.5" fill="#ffffff"/>
+        <text x="20" y="23.3" text-anchor="middle" font-size="11.5" font-weight="900" class="bn-ex">!</text>
+      </svg>
     `
     el.addEventListener('click', () => {
       showSegmentPopup(bn, { lng: bn.lng, lat: bn.lat })
     })
-    bottleneckMarkers.push(new maplibregl.Marker({ element: el })
+    bottleneckMarkers.push(new maplibregl.Marker({ element: el, anchor: 'bottom' })
       .setLngLat([bn.lng, bn.lat])
       .addTo(map))
   }
@@ -813,60 +822,66 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
 </style>
 
 <style>
-/* ─── Marcador de cuello de botella (badge '!' + anillo pulsante) ───────── */
+/* ─── Marcador de cuello de botella: pin SVG anclado en la punta ──────────
+ * anchor:'bottom' → la punta del pin toca exactamente la coordenada, así el
+ * icono se ve "plantado" en la vía y no se desfasa al mover el mapa.
+ * IMPORTANTE: no usar transform en el propio .bn-marker (MapLibre lo
+ * sobreescribe para posicionarlo); las animaciones van en los hijos. */
 .bn-marker {
-  position: relative;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 48px;
   cursor: pointer;
 }
 
-.bn-badge {
+.bn-svg {
   position: absolute;
-  top: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-family: 'Baloo 2', 'Nunito', sans-serif;
-  font-size: 1.15rem;
-  font-weight: 900;
-  border: 3px solid #ffffff;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  z-index: 2;
-  background: linear-gradient(135deg, #f87171 0%, #dc2626 70%);
+  top: 0;
+  left: 0;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.35));
 }
 
-.bn-marker.lvl-lento .bn-badge { background: linear-gradient(135deg, #fde047 0%, #ca8a04 75%); }
-.bn-marker.lvl-congestionado .bn-badge { background: linear-gradient(135deg, #fb923c 0%, #ea580c 75%); }
-.bn-marker.lvl-fluido .bn-badge { background: linear-gradient(135deg, #4ade80 0%, #16a34a 75%); }
-
-/* Punta inferior estilo Waze */
-.bn-badge::after {
-  content: '';
-  position: absolute;
-  bottom: -9px;
-  left: 50%;
-  transform: translateX(-50%);
-  border-left: 7px solid transparent;
-  border-right: 7px solid transparent;
-  border-top: 10px solid #dc2626;
+.bn-path {
+  fill: #dc2626;
+  stroke: #ffffff;
+  stroke-width: 3;
+  stroke-linejoin: round;
 }
 
-.bn-marker.lvl-lento .bn-badge::after { border-top-color: #ca8a04; }
-.bn-marker.lvl-congestionado .bn-badge::after { border-top-color: #ea580c; }
-.bn-marker.lvl-fluido .bn-badge::after { border-top-color: #16a34a; }
+.bn-marker.lvl-lento .bn-path { fill: #ca8a04; }
+.bn-marker.lvl-congestionado .bn-path { fill: #ea580c; }
+.bn-marker.lvl-fluido .bn-path { fill: #16a34a; }
+
+.bn-ex {
+  fill: #b91c1c;
+}
+
+.bn-marker.lvl-lento .bn-ex { fill: #713f12; }
+.bn-marker.lvl-congestionado .bn-ex { fill: #7c2d12; }
+.bn-marker.lvl-fluido .bn-ex { fill: #14532d; }
 
 .bn-ring {
   position: absolute;
-  inset: 0;
+  top: 19px;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(239, 68, 68, 0.55) 0%, rgba(239, 68, 68, 0) 70%);
+  background: radial-gradient(circle, rgba(239, 68, 68, 0.5) 0%, rgba(239, 68, 68, 0) 70%);
   animation: bn-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+.bn-shadow {
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  width: 22px;
+  height: 6px;
+  margin-left: -11px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.4), transparent 70%);
+  pointer-events: none;
 }
 
 @keyframes bn-pulse {
@@ -875,22 +890,19 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
   100% { transform: scale(2.1); opacity: 0; }
 }
 
-/* ─── Marcador de alertas (policía, accidentes, obras...) ───────────────── */
+/* ─── Marcador de alertas (policía, accidentes, obras...) ─────────────────
+ * El hover escala el icono interior (.alert-ico), NUNCA el elemento del
+ * marcador: MapLibre posiciona los marcadores con transform inline y un
+ * transform propio los desfasaría al mover el mapa. */
 .alert-marker {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
   background: #fff;
   border: 2.5px solid #64748b;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-  font-size: 0.98rem;
-  transition: transform 0.12s;
 }
-
-.alert-marker:hover { transform: scale(1.18); }
 
 .alert-marker.type-police { border-color: #2563eb; background: #eff6ff; }
 .alert-marker.type-accident { border-color: #dc2626; background: #fef2f2; }
@@ -900,9 +912,17 @@ watch(() => store.alerts, updateAlertMarkers, { deep: true })
 .alert-marker.type-other { border-color: #64748b; background: #f8fafc; }
 
 .alert-ico {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
   line-height: 1;
+  font-size: 0.98rem;
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+  transition: transform 0.12s;
 }
+
+.alert-marker:hover .alert-ico { transform: scale(1.22); }
 
 /* ─── Popups de MapLibre — tema claro ──────────────────────────────────── */
 .maplibregl-popup-content {

@@ -12,6 +12,9 @@
       <div class="status" :class="store.connected ? 'live' : 'down'">
         <span class="dot" />
         {{ store.connected ? 'EN VIVO' : 'SIN SEÑAL' }}
+        <span v-if="store.connected && store.lastUpdate" class="status-time" title="Última actualización del snapshot">
+          · {{ fmtTime(store.lastUpdate) }}
+        </span>
       </div>
       <button class="logout-btn" @click="logout">Salir · {{ auth.username }}</button>
     </header>
@@ -44,6 +47,13 @@ watch(
 
 function logout() {
   auth.logout()
+}
+
+/** Formatea un timestamp como HH:MM:SS local. */
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString('es-CO', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  })
 }
 
 onUnmounted(disconnectSSE)
@@ -136,6 +146,12 @@ h1 {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+}
+
+.status-time {
+  font-weight: 800;
+  letter-spacing: 0;
+  opacity: 0.8;
 }
 
 .status.live .dot { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.8); }

@@ -75,7 +75,7 @@ traffic:
     speed-ratio-threshold: 0.3
   # Intervalo del ciclo SSE en segundos. Ajusta para controlar la cuota de
   # las APIs externas (TomTom free tier ≈ 2.500 llamadas/día).
-  refresh-interval-seconds: ${TRAFFIC_REFRESH_INTERVAL_SECONDS:60}
+  refresh-interval-seconds: ${TRAFFIC_REFRESH_INTERVAL_SECONDS:30}
 
 vapid:
   public-key: ${VAPID_PUBLIC_KEY:}
