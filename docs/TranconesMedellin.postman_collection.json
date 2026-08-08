@@ -1,0 +1,756 @@
+{
+  "info": {
+    "_postman_id": "trancones-medellin-2026",
+    "name": "Trancones Medellin API",
+    "description": "API de Trancones Medellín — detección de cuellos de botella en tiempo real. Todos los endpoints (excepto login) requieren el header `Authorization: Bearer {{token}}`. El script de login guarda el token automáticamente. Base URL: http://localhost:8080",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Autenticacion",
+      "item": [
+        {
+          "name": "Login (guarda el token automaticamente)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"prueba\",\n  \"password\": \"prueba123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Unico endpoint publico. Devuelve un JWT que expira a los 15 minutos. El script extrae el token y lo guarda en la variable {{token}} para el resto de la coleccion."
+          },
+          "response": [
+            {
+              "name": "Login OK",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"token\": \"eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJwcnVlYmEiLCJyb2xlIjoiQURNSU4iLCJpYXQiOjE3ODYyMzAzMDksImV4cCI6MTc4NjIzMTIwOX0...\",\n  \"tokenType\": \"Bearer\",\n  \"expiresInSeconds\": 900,\n  \"username\": \"prueba\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"username\": \"prueba\",\n  \"password\": \"prueba123\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/auth/login",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "auth", "login"]
+                }
+              }
+            },
+            {
+              "name": "Credenciales invalidas",
+              "status": "Unauthorized",
+              "code": 401,
+              "body": "{\n  \"error\": \"Credenciales invalidas\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"username\": \"prueba\",\n  \"password\": \"incorrecta\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/auth/login",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "auth", "login"]
+                }
+              }
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.token) {",
+                  "  pm.collectionVariables.set('token', json.token);",
+                  "  console.log('Token guardado:', json.token.substring(0, 25) + '...');",
+                  "} else {",
+                  "  console.log('Login fallo:', JSON.stringify(json));",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Trafico en tiempo real",
+      "item": [
+        {
+          "name": "Stream SSE - trafico en vivo (cada 30s)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/stream/traffic",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "stream", "traffic"]
+            },
+            "description": "Server-Sent Events. Emite un evento `traffic-update` cada 30s con los segmentos (velocidad de las vias), cuellos de botella y alertas de incidentes. En Postman la respuesta se acumula en streaming."
+          },
+          "response": [
+            {
+              "name": "Evento SSE de ejemplo",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "text/event-stream"
+                }
+              ],
+              "body": "event: traffic-update\ndata: {\"segments\":[{\"segmentId\":\"av-el-poblado\",\"name\":\"Av. El Poblado\",\"speedKmh\":24,\"freeFlowKmh\":60,\"speedRatio\":0.4,\"status\":\"CONGESTION\",\"lat\":6.2005,\"lng\":-75.5754,\"geometry\":\"LINESTRING(...)\"}],\"bottlenecks\":[{\"segmentId\":\"av-el-poblado\",\"name\":\"Av. El Poblado\",\"status\":\"CONGESTION\",\"speedRatio\":0.4,\"congestionKm\":3.2,\"freeFlowKmh\":60,\"currentSpeedKmh\":24,\"geometry\":\"LINESTRING(...)\"}],\"alerts\":[{\"id\":\"incident-123\",\"type\":\"CLOSURE\",\"severity\":\"MAJOR\",\"description\":\"Cierre por obras en la Autopista Sur\",\"lat\":6.18,\"lng\":-75.59,\"source\":\"tomtom\",\"createdAt\":\"2026-08-08T17:29:00\"}],\"stale\":false}\n\n",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "text/event-stream"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/stream/traffic",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "stream", "traffic"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rutas alternativas por segmento",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/routes/alternatives?segmentId=av-la-playa",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "routes", "alternatives"],
+              "query": [
+                {
+                  "key": "segmentId",
+                  "value": "av-la-playa",
+                  "description": "ID del segmento (ej: av-la-playa, autopista-norte, av-el-poblado)"
+                }
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Ejemplo de rutas alternativas",
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"segmentId\": \"av-la-playa\",\n  \"alternatives\": [\n    {\n      \"name\": \"Calle 44 (San Juan) hacia el oriente\",\n      \"distanceKm\": 2.1,\n      \"durationMin\": 6,\n      \"trafficLevel\": \"LOW\"\n    },\n    {\n      \"name\": \"Av. San Juan + Carrera 65\",\n      \"distanceKm\": 3.4,\n      \"durationMin\": 9,\n      \"trafficLevel\": \"MODERATE\"\n    }\n  ]\n}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/routes/alternatives?segmentId=av-la-playa",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "routes", "alternatives"],
+                  "query": [
+                    {
+                      "key": "segmentId",
+                      "value": "av-la-playa"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Historico de trafico (day | week)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/history?range=day",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "history"],
+              "query": [
+                {
+                  "key": "range",
+                  "value": "day",
+                  "description": "day o week (default: week)"
+                }
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Ejemplo de historico",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  {\n    \"date\": \"2026-08-08\",\n    \"avgSpeedRatio\": 0.74,\n    \"bottleneckCount\": 3,\n    \"worstSegment\": \"av-el-poblado\"\n  },\n  {\n    \"date\": \"2026-08-07\",\n    \"avgSpeedRatio\": 0.81,\n    \"bottleneckCount\": 1,\n    \"worstSegment\": \"autopista-norte\"\n  }\n]",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/history?range=day",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "history"],
+                  "query": [
+                    {
+                      "key": "range",
+                      "value": "day"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Informes de usuarios (mapa)",
+      "item": [
+        {
+          "name": "Listar informes",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reports"]
+            }
+          },
+          "response": [
+            {
+              "name": "Ejemplo (lista vacia o con informes)",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  {\n    \"id\": 1,\n    \"username\": \"prueba\",\n    \"type\": \"WORKS\",\n    \"description\": \"Obras en la Av. Oriental frente a la Catedral\",\n    \"lat\": 6.2442,\n    \"lng\": -75.5721,\n    \"createdAt\": \"2026-08-08T18:00:00\"\n  }\n]",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/reports",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "reports"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Crear informe (punto en el mapa)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"WORKS\",\n  \"description\": \"Obras en la Av. Oriental frente a la Catedral\",\n  \"lat\": 6.2442,\n  \"lng\": -75.5721\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reports"]
+            },
+            "description": "type valido: POLICE | ACCIDENT | WORKS | CLOSURE | HAZARD | OTHER. Limite: 50 informes activos por usuario. Coordenadas de ejemplo: Plaza Botero (6.2442, -75.5721), Parque Lleras (6.2005, -75.5754), Centro (6.2605, -75.5596)."
+          },
+          "response": [
+            {
+              "name": "Informe creado",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"id\": 1,\n  \"username\": \"prueba\",\n  \"type\": \"WORKS\",\n  \"description\": \"Obras en la Av. Oriental frente a la Catedral\",\n  \"lat\": 6.2442,\n  \"lng\": -75.5721,\n  \"createdAt\": \"2026-08-08T18:00:00\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"WORKS\",\n  \"description\": \"Obras en la Av. Oriental frente a la Catedral\",\n  \"lat\": 6.2442,\n  \"lng\": -75.5721\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/reports",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "reports"]
+                }
+              }
+            },
+            {
+              "name": "Tipo invalido - 400",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\n  \"error\": \"type debe ser POLICE, ACCIDENT, WORKS, CLOSURE, HAZARD u OTHER\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"FANTASMA\",\n  \"lat\": 6.2442,\n  \"lng\": -75.5721\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/reports",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "reports"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrar informe (propio o admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reports", "1"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "1",
+                  "description": "ID del informe (de la respuesta de POST o GET)"
+                }
+              ]
+            },
+            "description": "Respuesta 204 No Content. Solo el dueno del informe o un admin pueden borrarlo."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat y grupos",
+      "item": [
+        {
+          "name": "Listar grupos (crea #General automaticamente)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/groups",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat", "groups"]
+            }
+          },
+          "response": [
+            {
+              "name": "Ejemplo de grupos",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  {\n    \"id\": 1,\n    \"name\": \"General\",\n    \"description\": \"Grupo publico para reportar y hablar del trafico en Medellin y el area metropolitana\",\n    \"createdBy\": \"sistema\",\n    \"createdAt\": \"2026-08-08T12:00:00\"\n  }\n]",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/chat/groups",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "chat", "groups"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Crear grupo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ciclistas Aburra\",\n  \"description\": \"Grupo para reportar ciclorrutas y seguridad en bicicleta\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/groups",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat", "groups"]
+            }
+          },
+          "response": [
+            {
+              "name": "Grupo creado",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"id\": 2,\n  \"name\": \"Ciclistas Aburra\",\n  \"description\": \"Grupo para reportar ciclorrutas y seguridad en bicicleta\",\n  \"createdBy\": \"prueba\",\n  \"createdAt\": \"2026-08-08T18:05:00\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Ciclistas Aburra\",\n  \"description\": \"Grupo para reportar ciclorrutas y seguridad en bicicleta\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/chat/groups",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "chat", "groups"]
+                }
+              }
+            },
+            {
+              "name": "Grupo duplicado - 400",
+              "status": "Bad Request",
+              "code": 400,
+              "body": "{\n  \"error\": \"Ya existe un grupo llamado 'General'\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"General\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/chat/groups",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "chat", "groups"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ver mensajes de un grupo",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/groups/1/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat", "groups", "1", "messages"],
+              "variable": [
+                {
+                  "key": "groupId",
+                  "value": "1",
+                  "description": "ID del grupo (de GET /api/chat/groups)"
+                }
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Ejemplo de mensajes",
+              "status": "OK",
+              "code": 200,
+              "body": "[\n  {\n    \"id\": 1,\n    \"groupId\": 1,\n    \"senderUsername\": \"demo\",\n    \"content\": \"Buenas noches, hay obras en la Regional\",\n    \"createdAt\": \"2026-08-08T17:00:00\"\n  }\n]",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/chat/groups/1/messages",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "chat", "groups", "1", "messages"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Enviar mensaje al grupo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Hay trancones en la Av. Las Vegas sentido norte, mejor tomen la Regional\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/groups/1/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat", "groups", "1", "messages"],
+              "variable": [
+                {
+                  "key": "groupId",
+                  "value": "1",
+                  "description": "ID del grupo (de GET /api/chat/groups)"
+                }
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Mensaje enviado",
+              "status": "Created",
+              "code": 201,
+              "body": "{\n  \"id\": 3,\n  \"groupId\": 1,\n  \"senderUsername\": \"prueba\",\n  \"content\": \"Hay trancones en la Av. Las Vegas sentido norte, mejor tomen la Regional\",\n  \"createdAt\": \"2026-08-08T18:10:00\"\n}",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"content\": \"Hay trancones en la Av. Las Vegas sentido norte, mejor tomen la Regional\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/chat/groups/1/messages",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "chat", "groups", "1", "messages"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Notificaciones Push",
+      "item": [
+        {
+          "name": "Suscribirse a notificaciones",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpoint\": \"https://fcm.googleapis.com/fcm/send/ejemplo_obtenido_del_navegador\",\n  \"p256dh\": \"BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM\",\n  \"auth\": \"yX1mK0oZ8sW2pQ7vB4nD6fH9jL1cR3tU\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/push/subscribe",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "push", "subscribe"]
+            },
+            "description": "Registra una suscripcion VAPID para recibir notificaciones push cuando hay cuellos de botella severos. El endpoint, p256dh y auth se obtienen de navigator.serviceWorker en el navegador."
+          },
+          "response": [
+            {
+              "name": "Suscripcion creada",
+              "status": "Created",
+              "code": 201,
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"endpoint\": \"https://fcm.googleapis.com/fcm/send/ejemplo\",\n  \"p256dh\": \"BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM\",\n  \"auth\": \"yX1mK0oZ8sW2pQ7vB4nD6fH9jL1cR3tU\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/push/subscribe",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "push", "subscribe"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelar suscripcion",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/push/unsubscribe?endpoint=https%3A%2F%2Ffcm.googleapis.com%2Ffcm%2Fsend%2Fejemplo",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "push", "unsubscribe"],
+              "query": [
+                {
+                  "key": "endpoint",
+                  "value": "https://fcm.googleapis.com/fcm/send/ejemplo",
+                  "description": "El endpoint que se registro (URL-encoded)"
+                }
+              ]
+            },
+            "description": "Respuesta 204 No Content."
+          }
+        }
+      ]
+    }
+  ]
+}
