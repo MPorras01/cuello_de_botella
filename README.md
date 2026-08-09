@@ -82,6 +82,65 @@ Toda la API (`/api/**`) requiere autenticación con **JWT** (Bearer token).
 2. Enviar `Authorization: Bearer <token>` en el resto de llamadas.
 3. Los tokens expiran; el frontend cierra sesión automáticamente al recibir 401.
 
+## Despliegue 🚀
+
+### 1. Publicar en GitHub
+
+```bash
+git init && git add -A && git commit -m "Inicial"
+git branch -M main
+git remote add origin https://github.com/<tu-usuario>/trancones-medellin.git
+git push -u origin main
+```
+
+Al subir el código, el workflow de **GitHub Actions** (`.github/workflows/ci.yml`) compila el backend (Java 21 + Maven), construye el frontend (Node + Vite) y valida que las dos imágenes Docker se buildeen. Dependabot mantiene las dependencias actualizadas.
+
+**Secrets que debes configurar** en *Settings → Secrets and variables → Actions* solo si añades un job de despliegue:
+
+| Secret | Uso |
+|---|---|
+| `JWT_SECRET` | Firma de tokens (mínimo 32 caracteres) |
+| `ADMIN_PASSWORD` | Contraseña inicial del admin |
+| `TOMTOM_API_KEY` | Fuente de tráfico en tiempo real |
+| `GOOGLE_MAPS_API_KEY` | Fuente opcional de Google Routes |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Notificaciones push |
+
+### 2. Levantar todo con Docker Compose
+
+Requiere Docker + Docker Compose instalados. Desde la raíz del proyecto:
+
+```bash
+cp .env.example .env   # completar JWT_SECRET, ADMIN_PASSWORD y TOMTOM_API_KEY
+docker compose up --build -d
+```
+
+> Requiere **Docker Compose v2.24+** (Docker Desktop ≥ 4.26) por el `env_file` opcional; si usas una versión anterior, crea el `.env` igualmente o quita la entrada `required: false` del `docker-compose.yml`.
+
+Queda disponible:
+
+- **Frontend** (nginx + proxy a la API): http://localhost:8081
+- **Backend** (API + SSE): http://localhost:8080
+- PostgreSQL en `5432` y Redis en `6379` (con healthchecks; el backend espera a que estén sanos)
+
+Para ver logs, detener o eliminar:
+
+```bash
+docker compose logs -f backend
+docker compose down          # detiene todo
+docker compose down -v       # detiene y borra los datos de la BD
+```
+
+### 3. Despliegue a producción (VPS / nube)
+
+La imagen del backend (`backend/Dockerfile`) y del frontend (`frontend/Dockerfile`) están listas para cualquier plataforma de contenedores (Render, Railway, Fly.io, AWS ECS, Kubernetes, etc.). Checklist para producción:
+
+1. **Nunca** arrancar sin `JWT_SECRET` (≥32 caracteres) y `ADMIN_PASSWORD` — si faltan, el backend genera valores aleatorios e imprime la contraseña en el log (solo válida para un arranque).
+2. Servir el frontend por **HTTPS** (el `Strict-Transport-Security` del nginx lo exige).
+3. Poner `CORS_ORIGINS` al dominio público del frontend.
+4. Poner `TRUST_FORWARDED_FOR=true` solo si hay un proxy de confianza que reescribe `X-Forwarded-For` (así el rate-limit de login usa la IP real).
+5. Las APIs externas (TomTom free ≈ 2.500 llamadas/día) se controlan con `TRAFFIC_REFRESH_INTERVAL_SECONDS` (300 = cada 5 min ≈ 1.800 llamadas/día).
+6. Usar una **BD y Redis gestionados** (o volúmenes persistentes) y backup de PostgreSQL.
+
 ## Orden de desarrollo (para el agente)
 1. Implementar fetchFromGoogle() en TrafficAggregatorService
 2. Implementar fetchFromWaze()

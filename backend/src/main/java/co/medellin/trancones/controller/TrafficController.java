@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +19,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Controlador reactivo. Expone endpoints SSE y REST.
@@ -37,6 +40,20 @@ public class TrafficController {
     private final NotificationService notificationService;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
 
+    /**
+     * Último snapshot válido (con datos). Se sirve como caché cuando un ciclo
+     * no logra datos de ninguna fuente (p. ej. cuota externa agotada), para
+     * que el mapa nunca quede en blanco. Se marca stale = true.
+     */
+    private final AtomicReference<TrafficSnapshotDTO> lastGoodSnapshot = new AtomicReference<>();
+
+    /**
+     * Intervalo entre ciclos SSE (segundos). Configurable para ajustar el
+     * consumo de la cuota de las APIs externas (TomTom free ≈ 2.500/día).
+     */
+    @Value("${traffic.refresh-interval-seconds:30}")
+    private long refreshIntervalSeconds;
+
     // ─── SSE ─────────────────────────────────────────────────────────────────
 
     /**
@@ -45,34 +62,102 @@ public class TrafficController {
      */
     @GetMapping(value = "/stream/traffic", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<TrafficSnapshotDTO>> streamTraffic() {
-        return Flux.interval(Duration.ofSeconds(30))
-                .flatMap(tick -> {
-                    long start = System.currentTimeMillis();
-                    return aggregatorService.getAggregatedTraffic()
-                            .collectList()
-                            .flatMap(segments ->
-                                    bottleneckService.detect(segments)
-                                            .map(bn -> new TrafficSnapshotDTO(segments, bn))
-                                            .defaultIfEmpty(new TrafficSnapshotDTO(segments, null))
-                                            .flatMap(snapshot -> cacheAndNotify(snapshot, start))
-                            );
-                })
+        return Flux.concat(
+                        // Evento inmediato al conectar: caché si existe, si no ciclo fresco.
+                        firstEvent(),
+                        Flux.interval(Duration.ofSeconds(Math.max(10, refreshIntervalSeconds)))
+                                .flatMap(tick -> buildSnapshot()))
                 .map(snapshot -> ServerSentEvent.<TrafficSnapshotDTO>builder()
                         .event("traffic-update")
                         .data(snapshot)
                         .build());
     }
 
+    /**
+     * Primer evento del stream: sirve el último snapshot conocido al instante;
+     * si aún no hay caché (primer cliente tras arranque), dispara un ciclo de
+     * agregación inmediato para no esperar al primer intervalo.
+     */
+    private Mono<TrafficSnapshotDTO> firstEvent() {
+        return Mono.defer(() -> {
+            TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+            if (cached != null) {
+                log.info("[Controller] Cliente conectado — enviando último snapshot ({} segmentos)",
+                        cached.segments().size());
+                return Mono.just(cached);
+            }
+            log.info("[Controller] Primer cliente — disparando ciclo inmediato");
+            return buildSnapshot();
+        });
+    }
+
+    /** Ejecuta un ciclo de agregación y aplica la lógica de caché/fusión. */
+    private Mono<TrafficSnapshotDTO> buildSnapshot() {
+        long start = System.currentTimeMillis();
+        return aggregatorService.getAggregatedTraffic()
+                .flatMap(agg -> {
+                    List<SegmentStatus> bottlenecks = bottleneckService.detectAll(agg.segments());
+                    TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+                    TrafficSnapshotDTO snapshot;
+                    if (!agg.segments().isEmpty()) {
+                        // Ciclo sano: se refresca la caché con segmentos + alertas.
+                        snapshot = TrafficSnapshotDTO.fresh(agg.segments(), bottlenecks, agg.alerts());
+                        lastGoodSnapshot.set(snapshot);
+                    } else if (!agg.alerts().isEmpty()) {
+                        // Fallaron los segmentos pero hay alertas frescas: se mantienen
+                        // los segmentos en caché y se fusionan con las alertas nuevas.
+                        snapshot = cached != null && !cached.segments().isEmpty()
+                                ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                        agg.alerts(), true)
+                                : TrafficSnapshotDTO.fresh(List.of(), List.of(), agg.alerts());
+                        if (cached != null && !cached.segments().isEmpty()) {
+                            log.warn("[Controller] Sin segmentos de fuentes externas — segmentos en caché + alertas frescas");
+                        }
+                    } else {
+                        // Sin datos de ninguna fuente: servir el último válido como caché.
+                        snapshot = cached != null
+                                ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                        cached.alerts(), true)
+                                : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of());
+                        if (cached != null) {
+                            log.warn("[Controller] Sin datos de fuentes externas — sirviendo snapshot en caché");
+                        }
+                    }
+                    return cacheAndNotify(snapshot, start);
+                })
+                // Un error transitorio (timeout de WebClient, Redis caído que escape del
+                // onErrorResume interno) NO debe matar el stream SSE: se sirve el último
+                // snapshot en caché (o uno vacío) y el siguiente ciclo reintenta solo.
+                .onErrorResume(e -> {
+                    log.warn("[Controller] Error en ciclo de agregación — sirviendo snapshot en caché: {}",
+                            e.getMessage());
+                    TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+                    return Mono.just(cached != null
+                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                    cached.alerts(), true)
+                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of()));
+                });
+    }
+
     private Mono<TrafficSnapshotDTO> cacheAndNotify(TrafficSnapshotDTO snapshot, long startMs) {
+        SegmentStatus worst = snapshot.bottlenecks() == null || snapshot.bottlenecks().isEmpty()
+                ? null
+                : snapshot.bottlenecks().get(0);
+
+        // Snapshot en caché: no re-notificar ni reescribir Redis (datos sin cambios).
+        if (snapshot.stale()) {
+            return Mono.fromSupplier(() -> snapshot);
+        }
+
         // Cachear en Redis con TTL 60s (onErrorResume para fallback si Redis no está disponible)
         Mono<Void> cacheOp = Flux.fromIterable(snapshot.segments())
                 .flatMap(seg -> redisTemplate.opsForValue()
                         .set("traffic:segment:" + seg.segmentId(),
                                 seg.segmentId() + ":" + seg.speedRatio(),
                                 Duration.ofSeconds(60)))
-                .then(snapshot.bottleneck() != null
+                .then(worst != null
                         ? redisTemplate.opsForValue()
-                                .set("traffic:bottleneck", snapshot.bottleneck().segmentId(),
+                                .set("traffic:bottleneck", worst.segmentId(),
                                         Duration.ofSeconds(60)).then()
                         : Mono.empty())
                 .onErrorResume(e -> {
@@ -81,8 +166,8 @@ public class TrafficController {
                 });
 
         // Enviar notificación push si hay cuello de botella severo
-        Mono<Void> notifyOp = snapshot.bottleneck() != null
-                ? notificationService.notifyBottleneck(snapshot.bottleneck()).onErrorResume(e -> Mono.empty())
+        Mono<Void> notifyOp = worst != null
+                ? notificationService.notifyBottleneck(worst).onErrorResume(e -> Mono.empty())
                 : Mono.empty();
 
         return cacheOp.then(notifyOp)
