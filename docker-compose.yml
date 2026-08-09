@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trancones-postgres
+    environment:
+      POSTGRES_DB: trancones
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d trancones"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: trancones-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  backend:
+    build: ./backend
+    container_name: trancones-backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SPRING_R2DBC_URL: r2dbc:postgresql://postgres:5432/trancones
+      SPRING_DATA_REDIS_HOST: redis
+      REDIS_HOST: redis
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-15}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8081}
+      # true porque el tráfico siempre pasa por el nginx del compose (frontend),
+      # que reescribe X-Forwarded-For. Si expones el 8080 directamente, pon "false".
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+
+  frontend:
+    build: ./frontend
+    container_name: trancones-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8081}:80"
+
+volumes:
+  pgdata:

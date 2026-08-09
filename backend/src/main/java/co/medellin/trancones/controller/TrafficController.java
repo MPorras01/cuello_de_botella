@@ -62,45 +62,81 @@ public class TrafficController {
      */
     @GetMapping(value = "/stream/traffic", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<TrafficSnapshotDTO>> streamTraffic() {
-        return Flux.interval(Duration.ofSeconds(Math.max(10, refreshIntervalSeconds)))
-                .flatMap(tick -> {
-                    long start = System.currentTimeMillis();
-                    return aggregatorService.getAggregatedTraffic()
-                            .flatMap(agg -> {
-                                List<SegmentStatus> bottlenecks = bottleneckService.detectAll(agg.segments());
-                                TrafficSnapshotDTO cached = lastGoodSnapshot.get();
-                                TrafficSnapshotDTO snapshot;
-                                if (!agg.segments().isEmpty()) {
-                                    // Ciclo sano: se refresca la caché con segmentos + alertas.
-                                    snapshot = TrafficSnapshotDTO.fresh(agg.segments(), bottlenecks, agg.alerts());
-                                    lastGoodSnapshot.set(snapshot);
-                                } else if (!agg.alerts().isEmpty()) {
-                                    // Fallaron los segmentos pero hay alertas frescas: se mantienen
-                                    // los segmentos en caché y se fusionan con las alertas nuevas.
-                                    snapshot = cached != null && !cached.segments().isEmpty()
-                                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
-                                                    agg.alerts(), true)
-                                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), agg.alerts());
-                                    if (cached != null && !cached.segments().isEmpty()) {
-                                        log.warn("[Controller] Sin segmentos de fuentes externas — segmentos en caché + alertas frescas");
-                                    }
-                                } else {
-                                    // Sin datos de ninguna fuente: servir el último válido como caché.
-                                    snapshot = cached != null
-                                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
-                                                    cached.alerts(), true)
-                                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of());
-                                    if (cached != null) {
-                                        log.warn("[Controller] Sin datos de fuentes externas — sirviendo snapshot en caché");
-                                    }
-                                }
-                                return cacheAndNotify(snapshot, start);
-                            });
-                })
+        return Flux.concat(
+                        // Evento inmediato al conectar: caché si existe, si no ciclo fresco.
+                        firstEvent(),
+                        Flux.interval(Duration.ofSeconds(Math.max(10, refreshIntervalSeconds)))
+                                .flatMap(tick -> buildSnapshot()))
                 .map(snapshot -> ServerSentEvent.<TrafficSnapshotDTO>builder()
                         .event("traffic-update")
                         .data(snapshot)
                         .build());
+    }
+
+    /**
+     * Primer evento del stream: sirve el último snapshot conocido al instante;
+     * si aún no hay caché (primer cliente tras arranque), dispara un ciclo de
+     * agregación inmediato para no esperar al primer intervalo.
+     */
+    private Mono<TrafficSnapshotDTO> firstEvent() {
+        return Mono.defer(() -> {
+            TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+            if (cached != null) {
+                log.info("[Controller] Cliente conectado — enviando último snapshot ({} segmentos)",
+                        cached.segments().size());
+                return Mono.just(cached);
+            }
+            log.info("[Controller] Primer cliente — disparando ciclo inmediato");
+            return buildSnapshot();
+        });
+    }
+
+    /** Ejecuta un ciclo de agregación y aplica la lógica de caché/fusión. */
+    private Mono<TrafficSnapshotDTO> buildSnapshot() {
+        long start = System.currentTimeMillis();
+        return aggregatorService.getAggregatedTraffic()
+                .flatMap(agg -> {
+                    List<SegmentStatus> bottlenecks = bottleneckService.detectAll(agg.segments());
+                    TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+                    TrafficSnapshotDTO snapshot;
+                    if (!agg.segments().isEmpty()) {
+                        // Ciclo sano: se refresca la caché con segmentos + alertas.
+                        snapshot = TrafficSnapshotDTO.fresh(agg.segments(), bottlenecks, agg.alerts());
+                        lastGoodSnapshot.set(snapshot);
+                    } else if (!agg.alerts().isEmpty()) {
+                        // Fallaron los segmentos pero hay alertas frescas: se mantienen
+                        // los segmentos en caché y se fusionan con las alertas nuevas.
+                        snapshot = cached != null && !cached.segments().isEmpty()
+                                ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                        agg.alerts(), true)
+                                : TrafficSnapshotDTO.fresh(List.of(), List.of(), agg.alerts());
+                        if (cached != null && !cached.segments().isEmpty()) {
+                            log.warn("[Controller] Sin segmentos de fuentes externas — segmentos en caché + alertas frescas");
+                        }
+                    } else {
+                        // Sin datos de ninguna fuente: servir el último válido como caché.
+                        snapshot = cached != null
+                                ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                        cached.alerts(), true)
+                                : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of());
+                        if (cached != null) {
+                            log.warn("[Controller] Sin datos de fuentes externas — sirviendo snapshot en caché");
+                        }
+                    }
+                    return cacheAndNotify(snapshot, start);
+                })
+                // Un error transitorio (timeout de WebClient, Redis caído que escape del
+                // onErrorResume interno) NO debe matar el stream SSE: se sirve el último
+                // snapshot en caché (o uno vacío) y el siguiente ciclo reintenta solo.
+                .onErrorResume(e -> {
+                    log.warn("[Controller] Error en ciclo de agregación — sirviendo snapshot en caché: {}",
+                            e.getMessage());
+                    TrafficSnapshotDTO cached = lastGoodSnapshot.get();
+                    return Mono.just(cached != null
+                            ? new TrafficSnapshotDTO(cached.segments(), cached.bottlenecks(),
+                                    cached.alerts(), true)
+                            : TrafficSnapshotDTO.fresh(List.of(), List.of(), List.of()));
+                });
     }
 
     private Mono<TrafficSnapshotDTO> cacheAndNotify(TrafficSnapshotDTO snapshot, long startMs) {
