@@ -337,6 +337,8 @@ public class TrafficAggregatorService {
     /**
      * Consulta los incidentes en tiempo real de TomTom en el área metropolitana.
      * Requiere la misma TOMTOM_API_KEY (free tier incluye incidentes).
+     * Después de obtener los incidentes, resuelve las coordenadas a direcciones
+     * usando reverse geocoding para obtener nombre de calle y referencias.
      */
     Flux<TrafficAlert> fetchTomTomIncidents() {
         if (blank(props.getTomtom().getApiKey())) {
@@ -352,11 +354,164 @@ public class TrafficAggregatorService {
                         .build())
                 .retrieve()
                 .bodyToMono(TomTomIncidentsResponse.class)
-                .flatMapMany(resp -> Flux.fromIterable(mapTomTomIncidents(resp)))
+                .flatMapMany(resp -> {
+                    List<TrafficAlert> alerts = mapTomTomIncidents(resp);
+                    log.info("[Aggregator] {} alertas TomTom, enriqueciendo con geocoding...", alerts.size());
+                    // Enriquecer con reverse geocoding (batch de las primeras 20)
+                    return enrichAlertsWithGeocoding(alerts);
+                })
                 .onErrorResume(e -> {
                     log.warn("[Aggregator] Error en incidentes TomTom: {}", e.getMessage());
                     return Flux.empty();
                 });
+    }
+
+    /**
+     * WebClient temporal para Nominatim (OpenStreetMap) — reverse geocoding gratuito.
+     */
+    private WebClient nominatimClient() {
+        return WebClient.builder()
+                .baseUrl("https://nominatim.openstreetmap.org")
+                .defaultHeader("User-Agent", "TranconesMedellin/1.0 (trancones-app)")
+                .build();
+    }
+
+    /**
+     * Caché en memoria para resultados de reverse geocoding.
+     * Key = lat/lng redondeados a 3 decimales (~110m), Value = datos enriquecidos.
+     * Evita llamadas repetidas a Nominatim para incidentes en la misma zona.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, GeocodeCacheEntry> geocodeCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record GeocodeCacheEntry(String street, String fromLocation, String toLocation, String description) {}
+
+    private String geocodeKey(Double lat, Double lng) {
+        // Redondear a 3 decimales (~110m) para agrupar incidentes cercanos
+        return String.format("%.3f,%.3f", Math.round(lat * 1000) / 1000.0, Math.round(lng * 1000) / 1000.0);
+    }
+
+    /**
+     * Enriquece las alertas con nombre de calle usando Nominatim (OSM).
+     * Primero consulta la caché; solo llama a Nominatim para coordenadas
+     * nuevas. Procesa hasta 15 por ciclo (1.1s entre llamadas = ~16.5s total).
+     */
+    private Flux<TrafficAlert> enrichAlertsWithGeocoding(List<TrafficAlert> alerts) {
+        WebClient nomClient = nominatimClient();
+        List<TrafficAlert> enriched = new ArrayList<>();
+        List<TrafficAlert> needGeocode = new ArrayList<>();
+
+        // Separar: las que ya tienen caché vs las que necesitan geocoding
+        for (TrafficAlert alert : alerts) {
+            if (alert.lat() == null || alert.lng() == null) {
+                enriched.add(alert);
+                continue;
+            }
+            if (alert.street() != null && !alert.street().isBlank()) {
+                enriched.add(alert); // ya tiene calle de TomTom
+                continue;
+            }
+            String key = geocodeKey(alert.lat(), alert.lng());
+            GeocodeCacheEntry cached = geocodeCache.get(key);
+            if (cached != null) {
+                // Aplicar datos de caché
+                enriched.add(new TrafficAlert(
+                        alert.id(), alert.type(), alert.title(), cached.description(),
+                        alert.lat(), alert.lng(), alert.iconCategory(),
+                        cached.street(), cached.fromLocation(), cached.toLocation()));
+            } else {
+                needGeocode.add(alert);
+            }
+        }
+
+        // Geocodificar las que faltan (máx 15 por ciclo)
+        int toGeocode = Math.min(needGeocode.size(), 15);
+        List<TrafficAlert> toProcess = new ArrayList<>(needGeocode.subList(0, toGeocode));
+        List<TrafficAlert> remaining = needGeocode.size() > toGeocode
+                ? new ArrayList<>(needGeocode.subList(toGeocode, needGeocode.size()))
+                : new ArrayList<>();
+        enriched.addAll(remaining); // las que no alcanzaron van sin geocoding este ciclo
+
+        log.info("[Geocode] {}/{} alertas desde caché, {} por geocodificar, {} sin datos",
+                enriched.size() - remaining.size(), alerts.size(), toGeocode, remaining.size());
+
+        if (toProcess.isEmpty()) {
+            return Flux.fromIterable(enriched);
+        }
+
+        final int finalToGeocode = toGeocode;
+        return Flux.fromIterable(toProcess)
+                .concatMap(alert -> {
+                    String key = geocodeKey(alert.lat(), alert.lng());
+                    return nomClient.get()
+                            .uri(uriBuilder -> uriBuilder
+                                    .path("/reverse")
+                                    .queryParam("format", "json")
+                                    .queryParam("lat", alert.lat())
+                                    .queryParam("lon", alert.lng())
+                                    .queryParam("zoom", "18")
+                                    .queryParam("addressdetails", "1")
+                                    .queryParam("accept-language", "es")
+                                    .build())
+                            .retrieve()
+                            .bodyToMono(NominatimResponse.class)
+                            .map(geoResp -> {
+                                TrafficAlert enriched2 = enrichAlertFromNominatim(alert, geoResp);
+                                // Guardar en caché
+                                if (enriched2.street() != null) {
+                                    geocodeCache.put(key, new GeocodeCacheEntry(
+                                            enriched2.street(), enriched2.fromLocation(),
+                                            enriched2.toLocation(), enriched2.description()));
+                                }
+                                return enriched2;
+                            })
+                            .onErrorResume(e -> {
+                                log.warn("[Aggregator] Geocode falló para {}: {}", alert.id(), e.getMessage());
+                                return Mono.just(alert);
+                            })
+                            .delayElement(java.time.Duration.ofMillis(1100));
+                })
+                .concatWith(Flux.fromIterable(enriched));
+    }
+
+    /**
+     * Enriquece una alerta con datos del reverse geocoding de Nominatim.
+     * Extrae el nombre de la calle, barrio y municipio para crear
+     * una descripción rica con la ubicación textual del incidente.
+     */
+    private TrafficAlert enrichAlertFromNominatim(TrafficAlert alert, NominatimResponse geoResp) {
+        if (geoResp == null || geoResp.address() == null) return alert;
+        var addr = geoResp.address();
+
+        // Nombre de la calle principal
+        String streetName = addr.road();
+        if (streetName == null || streetName.isBlank()) streetName = addr.pedestrian();
+        if (streetName == null || streetName.isBlank()) streetName = addr.highway();
+        String municipality = addr.city() != null ? addr.city() : addr.town();
+        String neighbourhood = addr.suburb() != null ? addr.suburb() : addr.neighbourhood();
+
+        // Construir descripción rica con calle y referencias
+        String fromLoc = null;
+        String toLoc = null;
+        if (streetName != null && !streetName.isBlank()) {
+            fromLoc = streetName;
+            if (neighbourhood != null && !neighbourhood.isBlank()) {
+                toLoc = neighbourhood;
+            } else if (municipality != null && !municipality.isBlank()) {
+                toLoc = municipality;
+            }
+        }
+
+        String desc = alert.title();
+        if (fromLoc != null) {
+            desc = fromLoc;
+            if (toLoc != null) desc += " · " + toLoc;
+        }
+
+        return new TrafficAlert(
+                alert.id(), alert.type(), alert.title(), desc,
+                alert.lat(), alert.lng(), alert.iconCategory(),
+                streetName, fromLoc, toLoc);
     }
 
     private List<TrafficAlert> mapTomTomIncidents(TomTomIncidentsResponse resp) {
@@ -374,14 +529,40 @@ public class TrafficAggregatorService {
 
             String type = INCIDENT_TYPE.getOrDefault(cat, "OTHER");
             String title = INCIDENT_NAME.getOrDefault(cat, "Incidente");
+            // Construir nombre de la calle y referencias desde TomTom
+            String from = props.from();
+            String to = props.to();
+            List<String> roads = props.roadNumbers();
+            String streetName = (roads != null && !roads.isEmpty()) ? roads.get(0) : null;
+            if (streetName == null && from != null && !from.isBlank()) streetName = from;
+            String desc = buildAlertDescription(type, title, from, to);
             // Dedupe por cuadrante de ~1 km (2 decimales) para agrupar cierres
             // consecutivos del mismo corredor en un solo marcador.
             long key = Math.round(coord[0] * 100) * 10000L + Math.round(coord[1] * 100);
             dedup.putIfAbsent(key, new TrafficAlert(
-                    "tomtom-inc-" + key, type, title, title,
-                    coord[1], coord[0], cat));
+                    "tomtom-inc-" + key, type, title, desc,
+                    coord[1], coord[0], cat, streetName, from, to));
         }
         return new ArrayList<>(dedup.values());
+    }
+
+    /**
+     * Construye una descripción rica con nombre de la calle y referencias
+     * del lugar exacto donde inicia y termina el incidente.
+     */
+    private String buildAlertDescription(String type, String title, String from, String to) {
+        StringBuilder sb = new StringBuilder();
+        if (from != null && !from.isBlank()) {
+            sb.append(from);
+            if (to != null && !to.isBlank()) {
+                sb.append(" → ").append(to);
+            }
+        } else if (to != null && !to.isBlank()) {
+            sb.append("Hasta ").append(to);
+        } else {
+            sb.append(title);
+        }
+        return sb.toString();
     }
 
     /**

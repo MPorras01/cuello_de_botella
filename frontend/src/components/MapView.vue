@@ -210,11 +210,36 @@ function showSegmentPopup(seg, lngLat) {
 
 function showAlertPopup(alert) {
   if (!map) return
-  if (!popup) popup = new maplibregl.Popup({ offset: 16, closeButton: false })
+  if (popup) popup.remove()
+  popup = new maplibregl.Popup({ offset: 20, closeButton: true, closeOnClick: false, maxWidth: '280px' })
+  const typeColor = {
+    POLICE: '#2563eb', ACCIDENT: '#dc2626', WORKS: '#ea580c',
+    CLOSURE: '#7c3aed', HAZARD: '#d97706', OTHER: '#64748b'
+  }[alert.type] ?? '#64748b'
+  const typeLabel = {
+    POLICE: 'Policía de Tránsito', ACCIDENT: 'Accidente Vial',
+    WORKS: 'Obra / Mantenimiento', CLOSURE: 'Vía Cerrada',
+    HAZARD: 'Peligro en la Vía', OTHER: 'Incidente Reportado'
+  }[alert.type] ?? 'Incidente'
+  // Construir nombre de la calle y referencia del lugar
+  const street = alert.street || '';
+  const fromLoc = alert.fromLocation || '';
+  const toLoc = alert.toLocation || '';
+  const locationRef = [fromLoc, toLoc].filter(Boolean).join(' → ');
   popup.setLngLat([alert.lng, alert.lat]).setHTML(`
-    <div class="wz-popup">
-      <strong>${esc(ALERT_ICONS[alert.type] ?? '🛈')} ${esc(alert.title)}</strong>
-      <span class="wz-popup-meta">${esc(alert.description)}</span>
+    <div class="alert-tooltip">
+      <div class="alert-tooltip-header" style="background:${typeColor}">
+        <span class="alert-tooltip-icon">${esc(ALERT_ICONS[alert.type] ?? '🛈')}</span>
+        <span class="alert-tooltip-type">${esc(typeLabel)}</span>
+      </div>
+      <div class="alert-tooltip-body">
+        ${street ? `<div class="alert-tooltip-street">🛤️ ${esc(street)}</div>` : ''}
+        <div class="alert-tooltip-title">${esc(alert.title)}</div>
+        ${locationRef ? `<div class="alert-tooltip-location">📍 ${esc(locationRef)}</div>` : ''}
+        <div class="alert-tooltip-meta">
+          <span class="alert-tooltip-coords">${Number(alert.lat).toFixed(5)}, ${Number(alert.lng).toFixed(5)}</span>
+        </div>
+      </div>
     </div>
   `).addTo(map)
 }
@@ -441,6 +466,7 @@ function initTrafficLayers() {
  * del informe y abre el modal de confirmación.
  */
 function onMapClick(e) {
+  if (popup) popup.remove()
   if (!reports.placing) return
   reports.setPendingReport(e.lngLat.lat, e.lngLat.lng)
 }
@@ -578,7 +604,7 @@ function updateAlertMarkers(alerts) {
     el.className = `alert-marker type-${(alert.type ?? 'OTHER').toLowerCase()}`
     el.innerHTML = `<span class="alert-ico">${esc(ALERT_ICONS[alert.type] ?? '🛈')}</span>`
     el.title = alert.title
-    el.addEventListener('click', () => showAlertPopup(alert))
+    el.addEventListener('click', (e) => { e.stopPropagation(); showAlertPopup(alert) })
     alertMarkers.push(new maplibregl.Marker({ element: el })
       .setLngLat([alert.lng, alert.lat])
       .addTo(map))
@@ -973,8 +999,8 @@ watch(() => reports.placing, (placing) => {
 /* ─── Botón modo día/noche ─────────────────────────────────────────────── */
 .night-toggle {
   position: absolute;
-  top: 4.6rem;
-  right: 0.9rem;
+  top: 7rem;
+  right: 0.3rem;
   z-index: 10;
   width: 2.6rem;
   height: 2.6rem;
@@ -1212,4 +1238,130 @@ watch(() => reports.placing, (placing) => {
 }
 
 .wz-popup-del:hover { background: #fee2e2; }
+
+/* ─── Tooltip modal de alertas (click en ⛔, 👮, ⚠️, 🚧) ──────────────── */
+.alert-tooltip {
+  border-radius: 14px;
+  overflow: hidden;
+  min-width: 220px;
+  max-width: 280px;
+  font-family: 'Nunito', sans-serif;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.3);
+  animation: tooltip-in 0.22s ease-out;
+}
+
+@keyframes tooltip-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.alert-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.alert-tooltip-icon {
+  font-size: 1.1rem;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+}
+
+.alert-tooltip-type {
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+}
+
+.alert-tooltip-body {
+  background: #fff;
+  padding: 0.6rem 0.75rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.alert-tooltip-street {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 800;
+  font-size: 0.82rem;
+  color: #1a73e8;
+  padding: 0.25rem 0.4rem;
+  background: #eff6ff;
+  border-radius: 8px;
+  border-left: 3px solid #1a73e8;
+}
+
+.alert-tooltip-title {
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #0f172a;
+  line-height: 1.25;
+}
+
+.alert-tooltip-location {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: #475569;
+  padding: 0.2rem 0.35rem;
+  background: #f8fafc;
+  border-radius: 6px;
+  border: 1px dashed #e2e8f0;
+  line-height: 1.3;
+}
+
+.alert-tooltip-desc {
+  font-size: 0.73rem;
+  color: #475569;
+  line-height: 1.35;
+}
+
+.alert-tooltip-meta {
+  margin-top: 0.2rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.alert-tooltip-coords {
+  font-size: 0.65rem;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Close button de MapLibre — redondeado y temático */
+.maplibregl-popup-close-button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #1e293b;
+  color: #fff;
+  border: 2px solid #fff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  transition: background 0.15s, transform 0.1s;
+  z-index: 5;
+}
+
+.maplibregl-popup-close-button:hover {
+  background: #dc2626;
+  transform: scale(1.1);
+}
 </style>

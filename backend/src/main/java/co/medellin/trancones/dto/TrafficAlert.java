@@ -11,5 +11,8 @@ public record TrafficAlert(
     String description,
     Double lat,
     Double lng,
-    Integer iconCategory
+    Integer iconCategory,
+    String street,
+    String fromLocation,
+    String toLocation
 ) {}
