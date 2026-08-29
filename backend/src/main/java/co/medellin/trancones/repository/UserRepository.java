@@ -10,4 +10,10 @@ import reactor.core.publisher.Mono;
 public interface UserRepository extends ReactiveCrudRepository<AppUser, Long> {
 
     Mono<AppUser> findByUsername(String username);
+
+    Mono<AppUser> findByEmail(String email);
+
+    Mono<AppUser> findByPhone(String phone);
+
+    Mono<AppUser> findByGoogleSub(String googleSub);
 }
