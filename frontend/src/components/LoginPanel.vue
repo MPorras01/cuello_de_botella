@@ -118,16 +118,37 @@
 
         <!-- Google -->
         <div v-else class="form google-pane">
-          <p class="google-hint">Entra con tu cuenta de Google en un solo clic.</p>
-          <button class="google-btn" @click="loginGoogle" :disabled="loading">
-            <svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true">
-              <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.1 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/>
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
-              <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
-              <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.1 5.7l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/>
-            </svg>
-            {{ loading ? 'Conectando…' : 'Continuar con Google' }}
-          </button>
+          <template v-if="googleAvailable === null">
+            <p class="google-hint">Verificando disponibilidad…</p>
+          </template>
+          <template v-else-if="googleAvailable === false">
+            <div class="google-unavailable">
+              <span class="google-unavailable-icon">⚠️</span>
+              <p class="google-unavailable-title">Google OAuth no disponible</p>
+              <p class="google-unavailable-desc">
+                El administrador debe configurar las credenciales de Google en el servidor.
+              </p>
+              <ol class="google-unavailable-steps">
+                <li>Ve a <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a></li>
+                <li>Crea un proyecto y habilita "Google+ API"</li>
+                <li>Crea credenciales OAuth 2.0 (Client ID Web)</li>
+                <li>Añade <code>http://localhost:8080/api/auth/google/callback</code> como URI autorizada</li>
+                <li>Configura <code>GOOGLE_OAUTH_CLIENT_ID</code> y <code>GOOGLE_OAUTH_CLIENT_SECRET</code></li>
+              </ol>
+            </div>
+          </template>
+          <template v-else>
+            <p class="google-hint">Entra con tu cuenta de Google en un solo clic.</p>
+            <button class="google-btn" @click="loginGoogle" :disabled="loading">
+              <svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true">
+                <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.1 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/>
+                <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+                <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+                <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.1 5.7l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/>
+              </svg>
+              {{ loading ? 'Conectando…' : 'Continuar con Google' }}
+            </button>
+          </template>
         </div>
 
         <p v-if="auth.loginError" class="error" role="alert">{{ auth.loginError }}</p>
@@ -170,14 +191,29 @@ const devCode = ref('')
 
 // 2FA
 const mfaCode = ref('')
+const googleAvailable = ref(null) // null = checking, true/false = checked
 
 const isMfa = computed(() => auth.pendingMfa)
+
+async function checkGoogle() {
+  googleAvailable.value = null
+  try {
+    const res = await fetch('/api/auth/google/url')
+    googleAvailable.value = res.ok
+    if (!res.ok && res.status === 503) {
+      error.value = 'Google OAuth no está configurado en el servidor. Solicita al administrador que configure GOOGLE_OAUTH_CLIENT_ID y GOOGLE_OAUTH_CLIENT_SECRET en Google Cloud Console.'
+    }
+  } catch {
+    googleAvailable.value = false
+  }
+}
 
 function switchTab(id) {
   tab.value = id
   error.value = ''
   phoneCodeSent.value = false
   devCode.value = ''
+  if (id === 'google') checkGoogle()
 }
 
 async function postJson(url, body) {
@@ -254,7 +290,12 @@ async function loginGoogle() {
   try {
     const res = await fetch('/api/auth/google/url')
     const data = await res.json().catch(() => null)
-    if (!res.ok) throw new Error(data?.error ?? 'No se pudo iniciar con Google')
+    if (!res.ok) {
+      if (res.status === 503) {
+        throw new Error('Google OAuth no está configurado. Ve a Google Cloud Console, crea un proyecto, activa OAuth 2.0 y configura GOOGLE_OAUTH_CLIENT_ID y GOOGLE_OAUTH_CLIENT_SECRET en el backend.')
+      }
+      throw new Error(data?.error ?? 'No se pudo iniciar con Google')
+    }
     window.location.href = data.url
   } catch (e) {
     error.value = e.message
@@ -407,12 +448,15 @@ h1 {
 
 .error {
   color: #dc2626;
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: left;
   background: #fef2f2;
+  border: 1px solid #fecaca;
   border-radius: 10px;
-  padding: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  line-height: 1.5;
+  word-wrap: break-word;
 }
 
 /* Google */
@@ -450,6 +494,49 @@ h1 {
   border-radius: 10px;
   padding: 0.55rem;
   text-align: center;
+}
+
+/* Google no disponible */
+.google-unavailable {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  padding: 1.2rem;
+  text-align: left;
+}
+.google-unavailable-icon { font-size: 1.8rem; display: block; text-align: center; margin-bottom: 0.5rem; }
+.google-unavailable-title {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #92400e;
+  text-align: center;
+  margin-bottom: 0.3rem;
+}
+.google-unavailable-desc {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #78716c;
+  text-align: center;
+  margin-bottom: 0.8rem;
+}
+.google-unavailable-steps {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #57534e;
+  margin: 0;
+  padding-left: 1.2rem;
+  line-height: 1.8;
+}
+.google-unavailable-steps code {
+  background: #fef3c7;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  word-break: break-all;
+}
+.google-unavailable-steps a {
+  color: #2563eb;
+  text-decoration: underline;
 }
 
 /* 2FA */
