@@ -3,6 +3,7 @@ package co.medellin.trancones.service;
 import co.medellin.trancones.config.TrafficProperties;
 import co.medellin.trancones.dto.*;
 import co.medellin.trancones.dto.external.*;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -12,8 +13,11 @@ import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -53,15 +57,23 @@ public class TrafficAggregatorService {
         this.props = props;
     }
 
+    /** Resultado de un ciclo de agregación: segmentos + alertas. */
+    public record TrafficAggregation(List<SegmentStatus> segments, List<TrafficAlert> alerts) {}
+
     /**
-     * Agrega tráfico de las 4 fuentes en paralelo.
-     * Si una fuente falla o no está configurada, se omite y se continúa.
+     * Agrega tráfico de las fuentes en paralelo (segmentos de congestión y
+     * alertas de incidentes). Si una fuente falla o no está configurada,
+     * se omite y se continúa con las disponibles.
      */
-    public Flux<SegmentStatus> getAggregatedTraffic() {
+    public Mono<TrafficAggregation> getAggregatedTraffic() {
         long start = System.currentTimeMillis();
-        return Flux.merge(fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
-                .doOnComplete(() -> log.info("[Aggregator] Ciclo completado en {} ms",
-                        System.currentTimeMillis() - start));
+        return Mono.zip(
+                        Flux.merge(fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
+                                .collectList(),
+                        fetchTomTomIncidents().collectList())
+                .map(t -> new TrafficAggregation(t.getT1(), t.getT2()))
+                .doOnNext(agg -> log.info("[Aggregator] Ciclo completado en {} ms — {} segmentos, {} alertas",
+                        System.currentTimeMillis() - start, agg.segments().size(), agg.alerts().size()));
     }
 
     // ─── TomTom Traffic API (flujo en tiempo real, free tier) ──────────────
@@ -263,6 +275,321 @@ public class TrafficAggregatorService {
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+    }
+
+    // ─── TomTom Traffic Incidents (alertas: policía, accidentes, obras) ─────
+
+    /** Área del Valle de Aburrá para consultar incidentes (west,south,east,north). */
+    private static final String INCIDENTS_BBOX = "-75.74,6.08,-75.36,6.44";
+
+    /** Máximo de alertas por ciclo (evita saturar el mapa). */
+    private static final int MAX_ALERTS = 50;
+
+    /** Categorías que se muestran como alertas (se descartan ruido como niebla/hielo). */
+    private static final Set<Integer> RELEVANT_CATEGORIES = Set.of(
+            2, 8, 9, 10, 15, 16, 18, 19, 20, 21, 22, 23);
+
+    /** Categorías de icono de TomTom → tipo de alerta para el frontend. */
+    private static final Map<Integer, String> INCIDENT_TYPE = new LinkedHashMap<>();
+    private static final Map<Integer, String> INCIDENT_NAME = new LinkedHashMap<>();
+
+    static {
+        INCIDENT_TYPE.put(2, "ACCIDENT");
+        INCIDENT_TYPE.put(8, "CLOSURE");
+        INCIDENT_TYPE.put(9, "CLOSURE");
+        INCIDENT_TYPE.put(10, "WORKS");
+        INCIDENT_TYPE.put(18, "WORKS");
+        INCIDENT_TYPE.put(19, "POLICE");
+        INCIDENT_TYPE.put(15, "HAZARD");
+        INCIDENT_TYPE.put(16, "HAZARD");
+        INCIDENT_TYPE.put(20, "HAZARD");
+        INCIDENT_TYPE.put(21, "HAZARD");
+        INCIDENT_TYPE.put(22, "HAZARD");
+        INCIDENT_TYPE.put(23, "HAZARD");
+
+        INCIDENT_NAME.put(1, "Incidente desconocido");
+        INCIDENT_NAME.put(2, "Accidente");
+        INCIDENT_NAME.put(3, "Niebla");
+        INCIDENT_NAME.put(4, "Condiciones peligrosas");
+        INCIDENT_NAME.put(5, "Lluvia intensa");
+        INCIDENT_NAME.put(6, "Hielo en la vía");
+        INCIDENT_NAME.put(7, "Trancón");
+        INCIDENT_NAME.put(8, "Carril cerrado");
+        INCIDENT_NAME.put(9, "Vía cerrada");
+        INCIDENT_NAME.put(10, "Obras en la vía");
+        INCIDENT_NAME.put(11, "Viento fuerte");
+        INCIDENT_NAME.put(12, "Inundación");
+        INCIDENT_NAME.put(13, "Desvío");
+        INCIDENT_NAME.put(14, "Congestión");
+        INCIDENT_NAME.put(15, "Vehículo averiado");
+        INCIDENT_NAME.put(16, "Conducción temeraria");
+        INCIDENT_NAME.put(17, "Quitanieves");
+        INCIDENT_NAME.put(18, "Construcción");
+        INCIDENT_NAME.put(19, "Policía");
+        INCIDENT_NAME.put(20, "Vehículo incendiado");
+        INCIDENT_NAME.put(21, "Bomberos");
+        INCIDENT_NAME.put(22, "Cámara de velocidad");
+        INCIDENT_NAME.put(23, "Obstrucción");
+        INCIDENT_NAME.put(24, "Otro");
+        INCIDENT_NAME.put(25, "Evento programado");
+    }
+
+    /**
+     * Consulta los incidentes en tiempo real de TomTom en el área metropolitana.
+     * Requiere la misma TOMTOM_API_KEY (free tier incluye incidentes).
+     * Después de obtener los incidentes, resuelve las coordenadas a direcciones
+     * usando reverse geocoding para obtener nombre de calle y referencias.
+     */
+    Flux<TrafficAlert> fetchTomTomIncidents() {
+        if (blank(props.getTomtom().getApiKey())) {
+            return Flux.empty(); // ya se advirtió en fetchFromTomTom()
+        }
+        return tomtomWebClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        // v5 usa path limpio (sin style/zoom) y no admite fields/categoryFilter
+                        .path("/traffic/services/5/incidentDetails")
+                        .queryParam("key", props.getTomtom().getApiKey())
+                        .queryParam("bbox", INCIDENTS_BBOX)
+                        .queryParam("language", "es-ES")
+                        .build())
+                .retrieve()
+                .bodyToMono(TomTomIncidentsResponse.class)
+                .flatMapMany(resp -> {
+                    List<TrafficAlert> alerts = mapTomTomIncidents(resp);
+                    log.info("[Aggregator] {} alertas TomTom, enriqueciendo con geocoding...", alerts.size());
+                    // Enriquecer con reverse geocoding (batch de las primeras 20)
+                    return enrichAlertsWithGeocoding(alerts);
+                })
+                .onErrorResume(e -> {
+                    log.warn("[Aggregator] Error en incidentes TomTom: {}", e.getMessage());
+                    return Flux.empty();
+                });
+    }
+
+    /**
+     * WebClient temporal para Nominatim (OpenStreetMap) — reverse geocoding gratuito.
+     */
+    private WebClient nominatimClient() {
+        return WebClient.builder()
+                .baseUrl("https://nominatim.openstreetmap.org")
+                .defaultHeader("User-Agent", "TranconesMedellin/1.0 (trancones-app)")
+                .build();
+    }
+
+    /**
+     * Caché en memoria para resultados de reverse geocoding.
+     * Key = lat/lng redondeados a 3 decimales (~110m), Value = datos enriquecidos.
+     * Evita llamadas repetidas a Nominatim para incidentes en la misma zona.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, GeocodeCacheEntry> geocodeCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record GeocodeCacheEntry(String street, String fromLocation, String toLocation, String description) {}
+
+    private String geocodeKey(Double lat, Double lng) {
+        // Redondear a 3 decimales (~110m) para agrupar incidentes cercanos
+        return String.format("%.3f,%.3f", Math.round(lat * 1000) / 1000.0, Math.round(lng * 1000) / 1000.0);
+    }
+
+    /**
+     * Enriquece las alertas con nombre de calle usando Nominatim (OSM).
+     * Primero consulta la caché; solo llama a Nominatim para coordenadas
+     * nuevas. Procesa hasta 15 por ciclo (1.1s entre llamadas = ~16.5s total).
+     */
+    private Flux<TrafficAlert> enrichAlertsWithGeocoding(List<TrafficAlert> alerts) {
+        WebClient nomClient = nominatimClient();
+        List<TrafficAlert> enriched = new ArrayList<>();
+        List<TrafficAlert> needGeocode = new ArrayList<>();
+
+        // Separar: las que ya tienen caché vs las que necesitan geocoding
+        for (TrafficAlert alert : alerts) {
+            if (alert.lat() == null || alert.lng() == null) {
+                enriched.add(alert);
+                continue;
+            }
+            if (alert.street() != null && !alert.street().isBlank()) {
+                enriched.add(alert); // ya tiene calle de TomTom
+                continue;
+            }
+            String key = geocodeKey(alert.lat(), alert.lng());
+            GeocodeCacheEntry cached = geocodeCache.get(key);
+            if (cached != null) {
+                // Aplicar datos de caché
+                enriched.add(new TrafficAlert(
+                        alert.id(), alert.type(), alert.title(), cached.description(),
+                        alert.lat(), alert.lng(), alert.iconCategory(),
+                        cached.street(), cached.fromLocation(), cached.toLocation()));
+            } else {
+                needGeocode.add(alert);
+            }
+        }
+
+        // Geocodificar las que faltan (máx 15 por ciclo)
+        int toGeocode = Math.min(needGeocode.size(), 15);
+        List<TrafficAlert> toProcess = new ArrayList<>(needGeocode.subList(0, toGeocode));
+        List<TrafficAlert> remaining = needGeocode.size() > toGeocode
+                ? new ArrayList<>(needGeocode.subList(toGeocode, needGeocode.size()))
+                : new ArrayList<>();
+        enriched.addAll(remaining); // las que no alcanzaron van sin geocoding este ciclo
+
+        log.info("[Geocode] {}/{} alertas desde caché, {} por geocodificar, {} sin datos",
+                enriched.size() - remaining.size(), alerts.size(), toGeocode, remaining.size());
+
+        if (toProcess.isEmpty()) {
+            return Flux.fromIterable(enriched);
+        }
+
+        final int finalToGeocode = toGeocode;
+        return Flux.fromIterable(toProcess)
+                .concatMap(alert -> {
+                    String key = geocodeKey(alert.lat(), alert.lng());
+                    return nomClient.get()
+                            .uri(uriBuilder -> uriBuilder
+                                    .path("/reverse")
+                                    .queryParam("format", "json")
+                                    .queryParam("lat", alert.lat())
+                                    .queryParam("lon", alert.lng())
+                                    .queryParam("zoom", "18")
+                                    .queryParam("addressdetails", "1")
+                                    .queryParam("accept-language", "es")
+                                    .build())
+                            .retrieve()
+                            .bodyToMono(NominatimResponse.class)
+                            .map(geoResp -> {
+                                TrafficAlert enriched2 = enrichAlertFromNominatim(alert, geoResp);
+                                // Guardar en caché
+                                if (enriched2.street() != null) {
+                                    geocodeCache.put(key, new GeocodeCacheEntry(
+                                            enriched2.street(), enriched2.fromLocation(),
+                                            enriched2.toLocation(), enriched2.description()));
+                                }
+                                return enriched2;
+                            })
+                            .onErrorResume(e -> {
+                                log.warn("[Aggregator] Geocode falló para {}: {}", alert.id(), e.getMessage());
+                                return Mono.just(alert);
+                            })
+                            .delayElement(java.time.Duration.ofMillis(1100));
+                })
+                .concatWith(Flux.fromIterable(enriched));
+    }
+
+    /**
+     * Enriquece una alerta con datos del reverse geocoding de Nominatim.
+     * Extrae el nombre de la calle, barrio y municipio para crear
+     * una descripción rica con la ubicación textual del incidente.
+     */
+    private TrafficAlert enrichAlertFromNominatim(TrafficAlert alert, NominatimResponse geoResp) {
+        if (geoResp == null || geoResp.address() == null) return alert;
+        var addr = geoResp.address();
+
+        // Nombre de la calle principal
+        String streetName = addr.road();
+        if (streetName == null || streetName.isBlank()) streetName = addr.pedestrian();
+        if (streetName == null || streetName.isBlank()) streetName = addr.highway();
+        String municipality = addr.city() != null ? addr.city() : addr.town();
+        String neighbourhood = addr.suburb() != null ? addr.suburb() : addr.neighbourhood();
+
+        // Construir descripción rica con calle y referencias
+        String fromLoc = null;
+        String toLoc = null;
+        if (streetName != null && !streetName.isBlank()) {
+            fromLoc = streetName;
+            if (neighbourhood != null && !neighbourhood.isBlank()) {
+                toLoc = neighbourhood;
+            } else if (municipality != null && !municipality.isBlank()) {
+                toLoc = municipality;
+            }
+        }
+
+        String desc = alert.title();
+        if (fromLoc != null) {
+            desc = fromLoc;
+            if (toLoc != null) desc += " · " + toLoc;
+        }
+
+        return new TrafficAlert(
+                alert.id(), alert.type(), alert.title(), desc,
+                alert.lat(), alert.lng(), alert.iconCategory(),
+                streetName, fromLoc, toLoc);
+    }
+
+    private List<TrafficAlert> mapTomTomIncidents(TomTomIncidentsResponse resp) {
+        if (resp == null || resp.incidents() == null) return List.of();
+        // v5 no incluye id ni descripciones: se genera id desde las coordenadas,
+        // se deduplican incidentes en la misma cuadra y se acota la cantidad.
+        LinkedHashMap<Long, TrafficAlert> dedup = new LinkedHashMap<>();
+        for (var incident : resp.incidents()) {
+            if (dedup.size() >= MAX_ALERTS) break;
+            var props = incident.properties();
+            double[] coord = incidentCentroid(incident.geometry());
+            if (props == null || coord == null) continue;
+            int cat = props.iconCategory() != null ? props.iconCategory() : 1;
+            if (!RELEVANT_CATEGORIES.contains(cat)) continue;
+
+            String type = INCIDENT_TYPE.getOrDefault(cat, "OTHER");
+            String title = INCIDENT_NAME.getOrDefault(cat, "Incidente");
+            // Construir nombre de la calle y referencias desde TomTom
+            String from = props.from();
+            String to = props.to();
+            List<String> roads = props.roadNumbers();
+            String streetName = (roads != null && !roads.isEmpty()) ? roads.get(0) : null;
+            if (streetName == null && from != null && !from.isBlank()) streetName = from;
+            String desc = buildAlertDescription(type, title, from, to);
+            // Dedupe por cuadrante de ~1 km (2 decimales) para agrupar cierres
+            // consecutivos del mismo corredor en un solo marcador.
+            long key = Math.round(coord[0] * 100) * 10000L + Math.round(coord[1] * 100);
+            dedup.putIfAbsent(key, new TrafficAlert(
+                    "tomtom-inc-" + key, type, title, desc,
+                    coord[1], coord[0], cat, streetName, from, to));
+        }
+        return new ArrayList<>(dedup.values());
+    }
+
+    /**
+     * Construye una descripción rica con nombre de la calle y referencias
+     * del lugar exacto donde inicia y termina el incidente.
+     */
+    private String buildAlertDescription(String type, String title, String from, String to) {
+        StringBuilder sb = new StringBuilder();
+        if (from != null && !from.isBlank()) {
+            sb.append(from);
+            if (to != null && !to.isBlank()) {
+                sb.append(" → ").append(to);
+            }
+        } else if (to != null && !to.isBlank()) {
+            sb.append("Hasta ").append(to);
+        } else {
+            sb.append(title);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Extrae un punto representativo [lon, lat] de la geometría del incidente.
+     * Point → sus coordenadas; LineString → el punto medio de la polilínea.
+     */
+    private double[] incidentCentroid(TomTomIncidentsResponse.Geometry geometry) {
+        if (geometry == null || geometry.coordinates() == null || !geometry.coordinates().isArray()) {
+            return null;
+        }
+        JsonNode coords = geometry.coordinates();
+        if (coords.isEmpty()) return null;
+
+        // Point: [lon, lat]
+        if (coords.get(0).isNumber()) {
+            return new double[] { coords.get(0).asDouble(), coords.get(1).asDouble() };
+        }
+        // LineString: [[lon, lat], ...] → punto medio
+        List<double[]> points = new ArrayList<>();
+        for (JsonNode c : coords) {
+            if (c.isArray() && c.size() >= 2) {
+                points.add(new double[] { c.get(0).asDouble(), c.get(1).asDouble() });
+            }
+        }
+        if (points.isEmpty()) return null;
+        double[] mid = points.get(points.size() / 2);
+        return new double[] { mid[0], mid[1] };
     }
 
     // ─── Waze for Cities API (partner feed) ─────────────────────────────────
