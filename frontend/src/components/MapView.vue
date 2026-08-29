@@ -126,7 +126,8 @@ const DARK_STYLES = [
 ]
 
 const ALERT_ICONS = {
-  POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️', OTHER: '🛈'
+  POLICE: '👮', ACCIDENT: '⚠️', WORKS: '🚧', CLOSURE: '⛔', HAZARD: '☢️',
+  WEATHER: '🌦️', AIR_QUALITY: '🏭', FLOOD: '🌊', HAZARD: '☢️', OTHER: '🛈'
 }
 
 const REPORT_ICONS = {
@@ -211,21 +212,45 @@ function showSegmentPopup(seg, lngLat) {
 function showAlertPopup(alert) {
   if (!map) return
   if (popup) popup.remove()
-  popup = new maplibregl.Popup({ offset: 20, closeButton: true, closeOnClick: false, maxWidth: '280px' })
+  popup = new maplibregl.Popup({ offset: 20, closeButton: true, closeOnClick: false, maxWidth: '320px' })
   const typeColor = {
     POLICE: '#2563eb', ACCIDENT: '#dc2626', WORKS: '#ea580c',
-    CLOSURE: '#7c3aed', HAZARD: '#d97706', OTHER: '#64748b'
+    CLOSURE: '#7c3aed', HAZARD: '#d97706',
+    WEATHER: '#0ea5e9', AIR_QUALITY: '#f59e0b', FLOOD: '#0284c7',
+    OTHER: '#64748b'
   }[alert.type] ?? '#64748b'
   const typeLabel = {
     POLICE: 'Policía de Tránsito', ACCIDENT: 'Accidente Vial',
     WORKS: 'Obra / Mantenimiento', CLOSURE: 'Vía Cerrada',
-    HAZARD: 'Peligro en la Vía', OTHER: 'Incidente Reportado'
+    HAZARD: 'Peligro en la Vía',
+    WEATHER: 'Alerta Climática', AIR_QUALITY: 'Calidad del Aire', FLOOD: 'Riesgo de Inundación',
+    OTHER: 'Incidente Reportado'
   }[alert.type] ?? 'Incidente'
-  // Construir nombre de la calle y referencia del lugar
   const street = alert.street || '';
   const fromLoc = alert.fromLocation || '';
   const toLoc = alert.toLocation || '';
   const locationRef = [fromLoc, toLoc].filter(Boolean).join(' → ');
+  const meta = alert.metadata || {};
+  let extraHtml = '';
+  if (alert.type === 'WEATHER') {
+    extraHtml = `
+      <div class="alert-tooltip-weather">
+        ${meta.temperature ? `<span>🌡️ ${meta.temperature}°C</span>` : ''}
+        ${meta.humidity ? `<span>💧 ${meta.humidity}%</span>` : ''}
+        ${meta.windSpeed ? `<span>💨 ${meta.windSpeed} km/h</span>` : ''}
+        ${meta.precipitation ? `<span>🌧️ ${meta.precipitation} mm</span>` : ''}
+      </div>`
+  } else if (alert.type === 'AIR_QUALITY') {
+    const aqiColor = meta.color || '#00e400'
+    extraHtml = `
+      <div class="alert-tooltip-aqi">
+        <div class="aqi-badge" style="background:${aqiColor}">AQI ${meta.aqi || '?'}</div>
+        ${meta.pm25 ? `<span>PM2.5: ${meta.pm25}</span>` : ''}
+        ${meta.pm10 ? `<span>PM10: ${meta.pm10}</span>` : ''}
+        ${meta.recommendation ? `<div class="aqi-rec">${meta.recommendation}</div>` : ''}
+        ${meta.station ? `<div class="aqi-station">📍 ${meta.station}</div>` : ''}
+      </div>`
+  }
   popup.setLngLat([alert.lng, alert.lat]).setHTML(`
     <div class="alert-tooltip">
       <div class="alert-tooltip-header" style="background:${typeColor}">
@@ -236,6 +261,8 @@ function showAlertPopup(alert) {
         ${street ? `<div class="alert-tooltip-street">🛤️ ${esc(street)}</div>` : ''}
         <div class="alert-tooltip-title">${esc(alert.title)}</div>
         ${locationRef ? `<div class="alert-tooltip-location">📍 ${esc(locationRef)}</div>` : ''}
+        ${extraHtml}
+        <div class="alert-tooltip-desc">${esc(alert.description || '')}</div>
         <div class="alert-tooltip-meta">
           <span class="alert-tooltip-coords">${Number(alert.lat).toFixed(5)}, ${Number(alert.lng).toFixed(5)}</span>
         </div>
@@ -1337,6 +1364,70 @@ watch(() => reports.placing, (placing) => {
   font-size: 0.65rem;
   color: #94a3b8;
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* Weather alert extra info */
+.alert-tooltip-weather {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.3rem 0;
+  padding: 0.3rem 0.5rem;
+  background: #f0f9ff;
+  border-radius: 8px;
+  border: 1px solid #bae6fd;
+}
+.alert-tooltip-weather span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0369a1;
+  white-space: nowrap;
+}
+
+/* Air Quality alert extra info */
+.alert-tooltip-aqi {
+  margin: 0.3rem 0;
+  padding: 0.4rem 0.5rem;
+  background: #fefce8;
+  border-radius: 8px;
+  border: 1px solid #fde68a;
+}
+.aqi-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 800;
+  margin-bottom: 0.3rem;
+}
+.alert-tooltip-aqi span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #78716c;
+  margin: 0.1rem 0;
+}
+.aqi-rec {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #92400e;
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid #fde68a;
+  line-height: 1.4;
+}
+.aqi-station {
+  font-size: 0.65rem;
+  color: #a16207;
+  margin-top: 0.2rem;
+}
+
+.alert-tooltip-desc {
+  font-size: 0.72rem;
+  color: #475569;
+  line-height: 1.4;
+  margin-top: 0.2rem;
 }
 
 /* Close button de MapLibre — redondeado y temático */

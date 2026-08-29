@@ -44,17 +44,24 @@ public class TrafficAggregatorService {
     private final WebClient tomtomWebClient;
     private final TrafficProperties props;
 
+    private final WeatherService weatherService;
+    private final AirQualityService airQualityService;
+
     public TrafficAggregatorService(
             @Qualifier("googleWebClient") WebClient googleWebClient,
             @Qualifier("wazeWebClient") WebClient wazeWebClient,
             @Qualifier("simmWebClient") WebClient simmWebClient,
             @Qualifier("tomtomWebClient") WebClient tomtomWebClient,
-            TrafficProperties props) {
+            TrafficProperties props,
+            WeatherService weatherService,
+            AirQualityService airQualityService) {
         this.googleWebClient = googleWebClient;
         this.wazeWebClient = wazeWebClient;
         this.simmWebClient = simmWebClient;
         this.tomtomWebClient = tomtomWebClient;
         this.props = props;
+        this.weatherService = weatherService;
+        this.airQualityService = airQualityService;
     }
 
     /** Resultado de un ciclo de agregación: segmentos + alertas. */
@@ -67,13 +74,119 @@ public class TrafficAggregatorService {
      */
     public Mono<TrafficAggregation> getAggregatedTraffic() {
         long start = System.currentTimeMillis();
-        return Mono.zip(
-                        Flux.merge(fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
-                                .collectList(),
-                        fetchTomTomIncidents().collectList())
-                .map(t -> new TrafficAggregation(t.getT1(), t.getT2()))
-                .doOnNext(agg -> log.info("[Aggregator] Ciclo completado en {} ms — {} segmentos, {} alertas",
+        Mono<List<SegmentStatus>> segmentsMono = Flux.merge(
+                        fetchFromTomTom(), fetchFromGoogle(), fetchFromSIMM(), fetchFromWaze())
+                .collectList();
+        Mono<List<TrafficAlert>> incidentsMono = fetchTomTomIncidents().collectList();
+        Mono<List<TrafficAlert>> weatherMono = fetchWeatherAlerts().collectList()
+                .onErrorResume(e -> { log.warn("[Weather] zip fallback: {}", e.getMessage()); return Mono.just(List.of()); });
+        Mono<List<TrafficAlert>> airMono = fetchAirQualityAlerts().collectList()
+                .onErrorResume(e -> { log.warn("[AirQuality] zip fallback: {}", e.getMessage()); return Mono.just(List.of()); });
+
+        return Mono.zip(segmentsMono, incidentsMono, weatherMono, airMono)
+                .map(t -> {
+                    List<TrafficAlert> allAlerts = new ArrayList<>(t.getT2());
+                    allAlerts.addAll(t.getT3());
+                    allAlerts.addAll(t.getT4());
+                    return new TrafficAggregation(t.getT1(), allAlerts);
+                })
+                .doOnNext(agg -> log.info("[Aggregator] Ciclo completado en {} ms — {} segmentos, {} alertas (weather+aq incluidos)",
                         System.currentTimeMillis() - start, agg.segments().size(), agg.alerts().size()));
+    }
+
+    // ─── Weather (Open-Meteo) ─────────────────────────────────────────────
+
+    /**
+     * Obtiene alertas de clima: lluvia fuerte, tormentas, viento peligroso.
+     */
+    private Flux<TrafficAlert> fetchWeatherAlerts() {
+        log.info("[Weather] Consultando Open-Meteo...");
+        return weatherService.getCurrentWeather()
+                .doOnNext(w -> log.info("[Weather] OK: {}°C, {}, severe={}", w.temperature(), w.description(), w.severe()))
+                .doOnError(e -> log.warn("[Weather] Error: {}", e.getMessage()))
+                .flatMapMany(weather -> {
+                    if (weather == null) { log.info("[Weather] Sin datos"); return Flux.empty(); }
+                    List<TrafficAlert> alerts = new ArrayList<>();
+
+                    // Lluvia fuerte
+                    if (weather.precipitation() > 5.0) {
+                        alerts.add(new TrafficAlert(
+                                "weather-rain", "WEATHER",
+                                "🌧️ Lluvia fuerte en Medellín",
+                                String.format("Precipitación: %.1f mm/h. Temperatura: %.1°C. Viento: %.0f km/h",
+                                        weather.precipitation(), weather.temperature(), weather.windSpeed()),
+                                6.2476, -75.5658, null, null, null, null,
+                                "MODERATE", "🌧️",
+                                Map.of("temperature", weather.temperature(),
+                                        "humidity", weather.humidity(),
+                                        "windSpeed", weather.windSpeed(),
+                                        "precipitation", weather.precipitation())));
+                    }
+
+                    // Tormenta eléctrica
+                    if (weather.weatherCode() >= 95) {
+                        alerts.add(new TrafficAlert(
+                                "weather-storm", "WEATHER",
+                                "⛈️ Tormenta eléctrica",
+                                weather.description() + ". Precaución al conducir.",
+                                6.2476, -75.5658, null, null, null, null,
+                                "SEVERE", "⛈️",
+                                Map.of("weatherCode", weather.weatherCode(),
+                                        "description", weather.description())));
+                    }
+
+                    // Viento peligroso
+                    if (weather.windGusts() > 50.0) {
+                        alerts.add(new TrafficAlert(
+                                "weather-wind", "WEATHER",
+                                "💨 Ráfagas de viento fuerte",
+                                String.format("Ráfagas de %.0f km/h. Viento direction: %d°",
+                                        weather.windGusts(), weather.windDirection()),
+                                6.2476, -75.5658, null, null, null, null,
+                                "HIGH", "💨",
+                                Map.of("windGusts", weather.windGusts(),
+                                        "windSpeed", weather.windSpeed())));
+                    }
+
+                    return Flux.fromIterable(alerts);
+                })
+                .onErrorResume(e -> {
+                    log.debug("[Weather] Error generando alertas: {}", e.getMessage());
+                    return Flux.empty();
+                });
+    }
+
+    // ─── Air Quality (AQICN/WAQI) ────────────────────────────────────────
+
+    /**
+     * Obtiene alertas de calidad del aire de las estaciones de Medellín.
+     */
+    private Flux<TrafficAlert> fetchAirQualityAlerts() {
+        log.info("[AirQuality] Consultando WAQI...");
+        return airQualityService.getAllStations()
+                .doOnNext(aq -> log.info("[AirQuality] OK: {} AQI={}", aq.stationName(), aq.aqi()))
+                .doOnError(e -> log.warn("[AirQuality] Error: {}", e.getMessage()))
+                .filter(aq -> aq != null)
+                .map(aq -> new TrafficAlert(
+                        "aqi-" + aq.stationId(), "AIR_QUALITY",
+                        "🏭 Calidad del aire: " + aq.level(),
+                        String.format("AQI: %d — %s. PM2.5: %s, PM10: %s",
+                                aq.aqi(), aq.level(),
+                                aq.pm25() != null ? String.format("%.0f", aq.pm25()) : "N/A",
+                                aq.pm10() != null ? String.format("%.0f", aq.pm10()) : "N/A"),
+                        6.2476, -75.5658, null, null, null, null,
+                        aq.unhealthy() ? "HIGH" : "LOW", "🏭",
+                        Map.of("aqi", aq.aqi(),
+                                "level", aq.level(),
+                                "color", aq.color(),
+                                "pm25", aq.pm25() != null ? aq.pm25() : 0,
+                                "pm10", aq.pm10() != null ? aq.pm10() : 0,
+                                "recommendation", aq.recommendation(),
+                                "station", aq.stationName())))
+                .onErrorResume(e -> {
+                    log.debug("[AirQuality] Error generando alertas: {}", e.getMessage());
+                    return Flux.empty();
+                });
     }
 
     // ─── TomTom Traffic API (flujo en tiempo real, free tier) ──────────────
@@ -418,7 +531,8 @@ public class TrafficAggregatorService {
                 enriched.add(new TrafficAlert(
                         alert.id(), alert.type(), alert.title(), cached.description(),
                         alert.lat(), alert.lng(), alert.iconCategory(),
-                        cached.street(), cached.fromLocation(), cached.toLocation()));
+                        cached.street(), cached.fromLocation(), cached.toLocation(),
+                        alert.severity(), alert.icon(), alert.metadata()));
             } else {
                 needGeocode.add(alert);
             }
@@ -511,7 +625,8 @@ public class TrafficAggregatorService {
         return new TrafficAlert(
                 alert.id(), alert.type(), alert.title(), desc,
                 alert.lat(), alert.lng(), alert.iconCategory(),
-                streetName, fromLoc, toLoc);
+                streetName, fromLoc, toLoc,
+                alert.severity(), alert.icon(), alert.metadata());
     }
 
     private List<TrafficAlert> mapTomTomIncidents(TomTomIncidentsResponse resp) {
@@ -541,7 +656,8 @@ public class TrafficAggregatorService {
             long key = Math.round(coord[0] * 100) * 10000L + Math.round(coord[1] * 100);
             dedup.putIfAbsent(key, new TrafficAlert(
                     "tomtom-inc-" + key, type, title, desc,
-                    coord[1], coord[0], cat, streetName, from, to));
+                    coord[1], coord[0], cat, streetName, from, to,
+                    null, null, null));
         }
         return new ArrayList<>(dedup.values());
     }

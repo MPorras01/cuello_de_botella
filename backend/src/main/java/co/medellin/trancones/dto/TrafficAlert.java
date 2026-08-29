@@ -1,8 +1,8 @@
 package co.medellin.trancones.dto;
 
 /**
- * Alerta de tráfico en un punto del mapa (policía, accidente, obras, cierre, etc.).
- * {@code type} es uno de: POLICE, ACCIDENT, WORKS, CLOSURE, HAZARD, OTHER.
+ * Alerta de tráfico, clima, calidad del aire o emergencia en el mapa.
+ * Tipos: POLICE, ACCIDENT, WORKS, CLOSURE, HAZARD, WEATHER, AIR_QUALITY, FLOOD, HAZARD, OTHER.
  */
 public record TrafficAlert(
     String id,
@@ -14,5 +14,9 @@ public record TrafficAlert(
     Integer iconCategory,
     String street,
     String fromLocation,
-    String toLocation
+    String toLocation,
+    // Campos extendidos para clima y calidad del aire
+    String severity,
+    String icon,
+    java.util.Map<String, Object> metadata
 ) {}
