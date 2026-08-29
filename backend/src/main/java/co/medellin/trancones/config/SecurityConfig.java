@@ -60,7 +60,14 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .authorizeExchange(exchanges -> exchanges
                         .pathMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .pathMatchers("/api/auth/login").permitAll()
+                        .pathMatchers(
+                                "/api/auth/login",
+                                "/api/auth/register",
+                                "/api/auth/google/url",
+                                "/api/auth/google/callback",
+                                "/api/auth/phone/request",
+                                "/api/auth/phone/verify",
+                                "/api/auth/2fa/verify").permitAll()
                         .pathMatchers("/api/**").authenticated()
                         .anyExchange().permitAll())
                 .exceptionHandling(spec -> spec.authenticationEntryPoint(entryPoint))

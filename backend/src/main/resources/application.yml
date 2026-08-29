@@ -34,6 +34,22 @@ security:
     # Solo activar si el backend está detrás de un proxy de confianza
     # que reescribe X-Forwarded-For (nginx, ALB, etc.).
     trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
+  oauth:
+    google:
+      # Credenciales OAuth 2.0 de Google Cloud Console (solo para el login con Google).
+      client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
+      client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+      # Callback del backend: debe coincidir EXACTO con el configurado en Google Cloud.
+      redirect-uri: ${GOOGLE_OAUTH_REDIRECT_URI:http://localhost:8080/api/auth/google/callback}
+      # A dónde vuelve el navegador tras autenticarse con Google.
+      frontend-redirect: ${GOOGLE_OAUTH_FRONTEND_REDIRECT:http://localhost:5173}
+
+phone:
+  # URL opcional de un proveedor de SMS (webhook). Si está vacía, el código OTP
+  # se escribe en el log y se devuelve en la respuesta (solo modo desarrollo).
+  sms-api-url: ${PHONE_SMS_API_URL:}
+  # Devolver el código OTP en la respuesta (útil en desarrollo; poner false en prod).
+  show-dev-code: ${PHONE_SHOW_DEV_CODE:true}
 
 traffic:
   sources:

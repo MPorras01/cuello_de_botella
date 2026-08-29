@@ -40,6 +40,29 @@ CREATE TABLE IF NOT EXISTS app_users (
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Columnas de autenticación moderna (idempotente: ALTER IF NOT EXISTS)
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS display_name   VARCHAR(100);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS email          VARCHAR(150);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS phone          VARCHAR(30);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS google_sub     VARCHAR(200);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_secret    VARCHAR(100);
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_enabled   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_via    VARCHAR(20) NOT NULL DEFAULT 'PASSWORD';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email   ON app_users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone   ON app_users(phone) WHERE phone IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google  ON app_users(google_sub) WHERE google_sub IS NOT NULL;
+
+-- Códigos de respaldo del 2FA (almacenados como hash BCrypt)
+CREATE TABLE IF NOT EXISTS user_recovery_codes (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    code_hash   VARCHAR(100) NOT NULL,
+    used        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON user_recovery_codes(user_id);
+
 -- Informes de usuarios colocados en el mapa (capa de usuario)
 CREATE TABLE IF NOT EXISTS user_reports (
     id          BIGSERIAL PRIMARY KEY,

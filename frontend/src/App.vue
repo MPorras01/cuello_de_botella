@@ -9,31 +9,37 @@
           <p>Área Metropolitana del Valle de Aburrá · Antioquia</p>
         </div>
       </div>
-      <div class="status" :class="store.connected ? (store.stale ? 'stale' : 'live') : 'down'">
-        <span class="dot" />
-        {{ store.connected ? (store.stale ? 'CACHÉ' : 'EN VIVO') : 'SIN SEÑAL' }}
-        <span v-if="store.connected && store.lastUpdate" class="status-time" :title="store.stale ? 'Fuentes externas sin datos (cuota agotada). Mostrando el último snapshot válido.' : 'Última actualización del snapshot'">
-          · {{ fmtTime(store.lastUpdate) }}
-        </span>
+      <div class="header-actions">
+        <div class="status" :class="store.connected ? (store.stale ? 'stale' : 'live') : 'down'">
+          <span class="dot" />
+          {{ store.connected ? (store.stale ? 'CACHÉ' : 'EN VIVO') : 'SIN SEÑAL' }}
+          <span v-if="store.connected && store.lastUpdate" class="status-time" :title="store.stale ? 'Fuentes externas sin datos (cuota agotada). Mostrando el último snapshot válido.' : 'Última actualización del snapshot'">
+            · {{ fmtTime(store.lastUpdate) }}
+          </span>
+        </div>
+        <button class="security-btn" title="Seguridad de la cuenta (2FA)" aria-label="Seguridad" @click="showSecurity = true">🛡️</button>
+        <button class="logout-btn" @click="logout">Salir · {{ auth.displayName || auth.username }}</button>
       </div>
-      <button class="logout-btn" @click="logout">Salir · {{ auth.username }}</button>
     </header>
     <main>
       <MapView />
     </main>
+    <SecurityModal v-if="showSecurity" @close="showSecurity = false" />
   </template>
 </template>
 
 <script setup>
-import { watch, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useTrafficStore } from './stores/trafficStore'
 import { useAuthStore } from './stores/authStore'
 import MapView from './components/MapView.vue'
 import LoginPanel from './components/LoginPanel.vue'
+import SecurityModal from './components/SecurityModal.vue'
 import { connectSSE, disconnectSSE } from './services/trafficSSE'
 
 const store = useTrafficStore()
 const auth = useAuthStore()
+const showSecurity = ref(false)
 
 // Conectar el stream SSE solo cuando hay sesión activa
 watch(
@@ -44,6 +50,24 @@ watch(
   },
   { immediate: true }
 )
+
+/**
+ * Procesa el redirect de Google (token/MFA/error vienen en el fragmento #)
+ * y lo limpia de la URL para no dejar el token visible en el historial.
+ */
+onMounted(() => {
+  const hash = new URLSearchParams(window.location.hash.slice(1))
+  if (hash.get('token')) {
+    auth.setAuth(hash.get('token'), hash.get('username'), hash.get('displayName'))
+    window.history.replaceState(null, '', window.location.pathname)
+  } else if (hash.get('mfa')) {
+    auth.setMfaChallenge(hash.get('mfaToken'), hash.get('username'))
+    window.history.replaceState(null, '', window.location.pathname)
+  } else if (hash.get('error')) {
+    auth.setLoginError(hash.get('error'))
+    window.history.replaceState(null, '', window.location.pathname)
+  }
+})
 
 function logout() {
   auth.logout()
@@ -162,6 +186,34 @@ h1 {
 .status.live .dot { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.8); }
 .status.stale .dot { background: #eab308; box-shadow: 0 0 6px rgba(234, 179, 8, 0.8); }
 .status.down .dot { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.8); }
+
+.header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-actions .status { margin-left: 0; }
+
+.security-btn {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.security-btn:hover {
+  background: #eff6ff;
+  transform: scale(1.06);
+}
 
 .logout-btn {
   padding: 0.4rem 0.85rem;
