@@ -44,9 +44,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-}
       JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-15}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8081}
-      # true porque el tráfico siempre pasa por el nginx del compose (frontend),
-      # que reescribe X-Forwarded-For. Si expones el 8080 directamente, pon "false".
       TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-true}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
     depends_on:
       postgres:
         condition: service_healthy

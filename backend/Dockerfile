@@ -11,7 +11,7 @@ RUN mvn -q -DskipTests package -B
 
 # ── Etapa 2: runtime (imagen mínima) ───────────────────────────────────────
 FROM eclipse-temurin:21-jre-alpine
-RUN addgroup -S app && adduser -S app -G app
+RUN apk add --no-cache curl && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 COPY --from=build /build/target/trancones-*.jar app.jar

@@ -67,7 +67,8 @@ public class SecurityConfig {
                                 "/api/auth/google/callback",
                                 "/api/auth/phone/request",
                                 "/api/auth/phone/verify",
-                                "/api/auth/2fa/verify").permitAll()
+                                "/api/auth/2fa/verify",
+                                "/api/health").permitAll()
                         .pathMatchers("/api/**").authenticated()
                         .anyExchange().permitAll())
                 .exceptionHandling(spec -> spec.authenticationEntryPoint(entryPoint))
