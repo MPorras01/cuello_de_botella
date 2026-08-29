@@ -17,6 +17,24 @@ spring:
 server:
   port: 8080
 
+# ─── Actuator / Monitoreo ─────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: trancones-medellin
+
 # ─── Seguridad ─────────────────────────────────────────────────────────────
 # JWT_SECRET: clave HMAC-SHA256 de AL MENOS 32 caracteres. Si no se configura,
 # se genera una aleatoria en cada arranque (los tokens no sobreviven reinicios).

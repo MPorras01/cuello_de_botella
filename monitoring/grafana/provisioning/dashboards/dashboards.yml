@@ -1,0 +1,16 @@
+# =============================================================================
+# Grafana — Dashboard provisioning
+# Carga automáticamente los dashboards JSON del directorio
+# =============================================================================
+apiVersion: 1
+
+providers:
+  - name: "Trancones"
+    orgId: 1
+    folder: "Trancones Medellín"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
