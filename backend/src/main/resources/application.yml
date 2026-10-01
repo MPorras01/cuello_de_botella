@@ -111,6 +111,13 @@ traffic:
   # las APIs externas (TomTom free tier ≈ 2.500 llamadas/día).
   refresh-interval-seconds: ${TRAFFIC_REFRESH_INTERVAL_SECONDS:30}
 
+# ─── Calidad del aire (WAQI / AQICN) ──────────────────────────────────────
+# Token gratuito: https://aqicn.org/data-platform/token/
+# Si no se configura, se usa el token de demostración de WAQI (solo pruebas;
+# puede ser revocado sin previo aviso y tiene cuotas muy bajas).
+airquality:
+  token: ${AIRQUALITY_TOKEN:demo}
+
 vapid:
   public-key: ${VAPID_PUBLIC_KEY:}
   private-key: ${VAPID_PRIVATE_KEY:}
