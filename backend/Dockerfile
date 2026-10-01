@@ -20,8 +20,8 @@ COPY --from=build /build/target/trancones-*.jar app.jar
 USER app
 EXPOSE 8080
 
-# Conexiones por defecto pensadas para docker-compose (ver docker-compose.yml)
-ENV SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/trancones \
-    SPRING_DATA_REDIS_HOST=redis
+# SPRING_R2DBC_URL se construye desde DB_HOST/DB_PORT/DB_NAME en application.yml.
+# SPRING_DATA_REDIS_HOST: default para docker-compose; en Render usar REDIS_HOST.
+ENV SPRING_DATA_REDIS_HOST=redis
 
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]

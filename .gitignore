@@ -32,3 +32,4 @@ desktop-v2.db*
 sse_*.txt
 
 graphify-out/
+backend/.jqwik-database
