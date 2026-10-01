@@ -30,3 +30,5 @@ Thumbs.db
 # Otros
 desktop-v2.db*
 sse_*.txt
+
+graphify-out/
