@@ -11,7 +11,8 @@ import java.util.List;
 
 /**
  * CORS restringido: solo orígenes permitidos por {@code cors.allowed-origins},
- * métodos mínimos y headers explícitos (Authorization para JWT).
+ * métodos explícitos y headers controlados (Authorization para JWT).
+ * En Render configurar FRONTEND_URL; en local se usa http://localhost:5173.
  */
 @Configuration
 public class CorsConfig {
@@ -23,11 +24,13 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
         cfg.setAllowedOrigins(List.of(allowedOrigins.split(",")));
-        cfg.setAllowedMethods(List.of("GET", "POST", "DELETE", "OPTIONS"));
+        cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         cfg.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept"));
+        cfg.setExposedHeaders(List.of("Authorization"));
+        cfg.setAllowCredentials(false);
         cfg.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", cfg);
+        source.registerCorsConfiguration("/api/**", cfg);
         return source;
     }
 }

@@ -124,4 +124,10 @@ vapid:
   subject: mailto:admin@trancones.co
 
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
+  # Origen(es) permitido(s), separados por coma (sin espacios, sin barra final).
+  # En Render: configura FRONTEND_URL con la URL exacta del frontend.
+  # Para múltiples orígenes usa CORS_ORIGINS (sobreescribe FRONTEND_URL).
+  # Ejemplos:
+  #   FRONTEND_URL=https://cuello-de-botella.onrender.com
+  #   CORS_ORIGINS=https://cuello-de-botella.onrender.com,https://otro.com
+  allowed-origins: ${CORS_ORIGINS:${FRONTEND_URL:http://localhost:5173}}
