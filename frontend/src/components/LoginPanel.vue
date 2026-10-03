@@ -161,6 +161,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useAuthStore } from '../stores/authStore'
+import { apiUrl } from '../services/api'
 
 const auth = useAuthStore()
 
@@ -198,7 +199,7 @@ const isMfa = computed(() => auth.pendingMfa)
 async function checkGoogle() {
   googleAvailable.value = null
   try {
-    const res = await fetch('/api/auth/google/url')
+    const res = await fetch(apiUrl('/api/auth/google/url'))
     googleAvailable.value = res.ok
     if (!res.ok && res.status === 503) {
       error.value = 'Google OAuth no está configurado en el servidor. Solicita al administrador que configure GOOGLE_OAUTH_CLIENT_ID y GOOGLE_OAUTH_CLIENT_SECRET en Google Cloud Console.'
@@ -217,7 +218,7 @@ function switchTab(id) {
 }
 
 async function postJson(url, body) {
-  const res = await fetch(url, {
+  const res = await fetch(apiUrl(url), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -288,7 +289,7 @@ async function loginGoogle() {
   loading.value = true
   error.value = ''
   try {
-    const res = await fetch('/api/auth/google/url')
+    const res = await fetch(apiUrl('/api/auth/google/url'))
     const data = await res.json().catch(() => null)
     if (!res.ok) {
       if (res.status === 503) {

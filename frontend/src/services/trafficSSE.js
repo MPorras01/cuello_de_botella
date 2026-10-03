@@ -1,6 +1,7 @@
 import { useTrafficStore } from '../stores/trafficStore'
 import { useAuthStore } from '../stores/authStore'
 import { buildDemoSegments, buildDemoAlerts } from './demoTraffic'
+import { apiUrl } from './api'
 
 /**
  * Conexión SSE al backend usando fetch + ReadableStream.
@@ -33,7 +34,7 @@ export async function connectSSE() {
   controller = new AbortController()
 
   try {
-    const response = await fetch('/api/stream/traffic', {
+    const response = await fetch(apiUrl('/api/stream/traffic'), {
       headers: { Authorization: `Bearer ${auth.token}` },
       signal: controller.signal
     })
